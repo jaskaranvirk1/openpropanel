@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -152,7 +153,13 @@ func redirectToLogin(w http.ResponseWriter, r *http.Request) {
 
 // SameOrigin is a CSRF guard for state-changing requests. Because session
 // cookies are SameSite=Strict this is defence-in-depth: we additionally reject
-// cross-origin POST/DELETE/PUT by comparing the Origin/Referer host to Host.
+// a POST/DELETE/PUT only when the browser positively reports a DIFFERENT
+// origin. An absent or opaque ("null") Origin is allowed: browsers send
+// Origin: null for form submissions from a page loaded over a self-signed /
+// untrusted certificate (the common case when reaching the panel by IP before
+// a real cert is configured), and rejecting it would make login impossible.
+// SameSite=Strict still prevents an actual cross-site request from ever
+// carrying the session cookie, so this is safe.
 func SameOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -160,7 +167,8 @@ func SameOrigin(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if origin := originHost(r); origin != "" && !strings.EqualFold(origin, r.Host) {
+		if origin := originHost(r); origin != "" && !strings.EqualFold(origin, "null") && !strings.EqualFold(origin, r.Host) {
+			log.Printf("cross-origin %s %s rejected: origin=%q host=%q", r.Method, r.URL.Path, origin, r.Host)
 			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 			return
 		}
