@@ -24,6 +24,7 @@ systemd unit.
 - **Auto SSL** — Let's Encrypt via `certbot` (HTTP-01 webroot); the vhost is rewritten to HTTPS with an automatic HTTP→HTTPS redirect. Renewal is handled by certbot's own timer.
 - **Per-site PHP versions** — each site runs its own PHP-FPM pool (system PHP or Remi `php83`/`php82`/… auto-detected), isolated under the account's system user with a restrictive `open_basedir`.
 - **Apache or Nginx** — pick either from Settings; switching regenerates every site's config, reprovisions php-fpm sockets, and swaps the service at runtime.
+- **Adopt existing sites** — on install it auto-discovers vhosts already on the server (configs it didn't create), lists them as *imported* (Files/SSL/logs work immediately, original config untouched), and offers a safe, backed-up, reversible **Adopt** to bring each under full management.
 - **MariaDB** — create databases and database users (username-prefixed), grant/revoke access, reset passwords — all per account.
 - **Multi-user** — admin accounts manage the server; user accounts own their own domains, databases and files, each isolated under its own Linux system user. Ownership is enforced on every action.
 - **Secure by design** — bcrypt passwords, server-side sessions, `SameSite=Strict` cookies + same-origin CSRF guard, strict domain/identifier validation, nginx dotfile denial + HSTS, and a single audited command-execution choke-point (no shell string interpolation). Reviewed by adversarial multi-agent audits at each milestone.

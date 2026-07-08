@@ -85,21 +85,28 @@ fi
 
 log "Starting Open ProPanel"
 systemctl enable --now openpropanel
-sleep 1
 
-IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-cat <<DONE
+# Wait for first-run to generate the random admin credentials, then read them.
+CREDS="/var/lib/openpropanel/initial-admin-password.txt"
+for _ in $(seq 1 20); do [ -s "$CREDS" ] && break; sleep 0.5; done
+USERNAME="$(awk -F': ' '/^username:/{print $2}' "$CREDS" 2>/dev/null)"
+PASSWORD="$(awk -F': ' '/^password:/{print $2}' "$CREDS" 2>/dev/null)"
+LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+PUB_IP="$(curl -fsS --max-time 4 https://api.ipify.org 2>/dev/null || true)"
 
-  Open ProPanel is installed and running.
-
-    URL:       http://${IP:-<server-ip>}:${PANEL_PORT}
-    Login:     see  journalctl -u openpropanel  (first-run admin password)
-               or   /var/lib/openpropanel/initial-admin-password.txt
-
-  IMPORTANT
-    * Open ProPanel v1 serves plain HTTP. Do NOT expose port ${PANEL_PORT} to the
-      public internet without TLS. Put it behind a reverse proxy with a
-      certificate, or restrict the port to your IP with the firewall.
-    * Change the admin password immediately after first login.
-
-DONE
+echo
+echo "=================================================================="
+echo " Open ProPanel installed successfully!"
+echo "=================================================================="
+[ -n "$PUB_IP" ] && echo " Panel URL (external): https://${PUB_IP}:${PANEL_PORT}"
+[ -n "$LAN_IP" ] && echo " Panel URL (internal): https://${LAN_IP}:${PANEL_PORT}"
+echo " Username:             ${USERNAME:-admin}"
+echo " Password:             ${PASSWORD:-see: journalctl -u openpropanel}"
+echo "=================================================================="
+echo " * Opened by IP, the panel uses a self-signed HTTPS cert (Let's Encrypt"
+echo "   can't issue for bare IPs) — accept the browser warning. Point a domain"
+echo "   at it for a free Let's Encrypt cert under Settings -> Panel HTTPS."
+echo " * You can change the username/password after logging in."
+echo " * Keep port ${PANEL_PORT} firewalled to trusted IPs (it runs as root)."
+echo "=================================================================="
+echo
