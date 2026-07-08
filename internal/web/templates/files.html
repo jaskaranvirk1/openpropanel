@@ -1,0 +1,124 @@
+{{define "title"}}Files · Open ProPanel{{end}}
+
+{{define "content"}}
+{{$sid := .Data.Site.ID}}
+{{$cur := .Data.Path}}
+<div class="mb-6 flex flex-wrap items-center justify-between gap-3">
+  <div>
+    <h1 class="text-lg font-semibold text-white">Files</h1>
+    <p class="text-sm text-slate-400">{{.Data.Site.Domain}}</p>
+  </div>
+  <a href="/sites" class="text-sm text-slate-400 hover:text-slate-200">&larr; Back to domains</a>
+</div>
+
+{{/* Breadcrumbs */}}
+<div class="mb-4 flex flex-wrap items-center gap-1 text-sm">
+  {{range $i, $c := .Data.Crumbs}}
+    {{if $i}}<span class="text-slate-600">/</span>{{end}}
+    <a href="/files?site={{$sid}}&path={{$c.Path}}" class="rounded px-1.5 py-0.5 text-slate-300 hover:bg-white/5 hover:text-white">{{$c.Name}}</a>
+  {{end}}
+</div>
+
+{{/* Toolbar */}}
+<div class="mb-5 flex flex-wrap items-end gap-3 rounded-2xl border border-white/5 bg-slate-900/40 p-4">
+  <form method="post" action="/files/upload" enctype="multipart/form-data" class="flex items-end gap-2">
+    <input type="hidden" name="site" value="{{$sid}}"><input type="hidden" name="path" value="{{$cur}}">
+    <div>
+      <label class="mb-1.5 block text-xs font-medium text-slate-400">Upload</label>
+      <input type="file" name="file" required class="text-xs text-slate-300 file:mr-2 file:rounded-md file:border-0 file:bg-white/5 file:px-2.5 file:py-1 file:text-xs file:text-slate-200">
+    </div>
+    <button class="rounded-lg border border-white/10 px-3 py-1.5 text-sm text-slate-300 hover:bg-white/5">Upload</button>
+  </form>
+  <form method="post" action="/files/mkdir" class="flex items-end gap-2">
+    <input type="hidden" name="site" value="{{$sid}}"><input type="hidden" name="path" value="{{$cur}}">
+    <div>
+      <label class="mb-1.5 block text-xs font-medium text-slate-400">New folder</label>
+      <input name="name" required placeholder="folder" class="w-32 rounded-lg border border-white/10 bg-slate-950/60 px-2.5 py-1.5 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none">
+    </div>
+    <button class="rounded-lg border border-white/10 px-3 py-1.5 text-sm text-slate-300 hover:bg-white/5">Create</button>
+  </form>
+  <form method="post" action="/files/new" class="flex items-end gap-2">
+    <input type="hidden" name="site" value="{{$sid}}"><input type="hidden" name="path" value="{{$cur}}">
+    <div>
+      <label class="mb-1.5 block text-xs font-medium text-slate-400">New file</label>
+      <input name="name" required placeholder="index.php" class="w-32 rounded-lg border border-white/10 bg-slate-950/60 px-2.5 py-1.5 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none">
+    </div>
+    <button class="rounded-lg border border-white/10 px-3 py-1.5 text-sm text-slate-300 hover:bg-white/5">Create</button>
+  </form>
+</div>
+
+{{/* Listing */}}
+<div class="overflow-hidden rounded-2xl border border-white/5 bg-slate-900/40">
+  <div class="overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="border-b border-white/5 text-left text-xs uppercase tracking-wide text-slate-500">
+        <th class="px-5 py-3 font-medium">Name</th>
+        <th class="px-3 py-3 font-medium">Size</th>
+        <th class="px-3 py-3 font-medium">Perms</th>
+        <th class="px-3 py-3 font-medium">Modified</th>
+        <th class="px-5 py-3 text-right font-medium">Actions</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-white/5">
+      {{if not .Data.AtRoot}}
+      <tr>
+        <td colspan="5" class="px-5 py-2">
+          <a href="/files?site={{$sid}}&path={{.Data.Parent}}" class="text-slate-400 hover:text-white">.. (up one level)</a>
+        </td>
+      </tr>
+      {{end}}
+      {{range .Data.Entries}}
+      <tr class="hover:bg-white/[0.02]">
+        <td class="px-5 py-2.5">
+          {{if .IsDir}}
+          <a href="/files?site={{$sid}}&path={{.RelPath}}" class="inline-flex items-center gap-2 font-medium text-slate-100 hover:text-indigo-300">
+            <svg class="h-4 w-4 text-indigo-400" viewBox="0 0 20 20" fill="currentColor"><path d="M3 5a2 2 0 0 1 2-2h3l2 2h5a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5Z"/></svg>
+            {{.Name}}
+          </a>
+          {{else}}
+          <a href="/files/edit?site={{$sid}}&path={{.RelPath}}" class="inline-flex items-center gap-2 text-slate-200 hover:text-indigo-300">
+            <svg class="h-4 w-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M4 3a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7l-4-4H4Z"/></svg>
+            {{.Name}}
+          </a>
+          {{end}}
+        </td>
+        <td class="px-3 py-2.5 text-slate-500">{{if .IsDir}}—{{else}}{{hsize .Size}}{{end}}</td>
+        <td class="px-3 py-2.5 font-mono text-xs text-slate-500">{{.Perm}}</td>
+        <td class="px-3 py-2.5 text-slate-500">{{.ModTime.Format "2006-01-02 15:04"}}</td>
+        <td class="px-5 py-2.5">
+          <div class="flex items-center justify-end gap-2">
+            {{if not .IsDir}}
+            <a href="/files/download?site={{$sid}}&path={{.RelPath}}" class="text-xs text-slate-400 hover:text-slate-100">Download</a>
+            {{end}}
+            <details class="relative">
+              <summary class="cursor-pointer list-none rounded px-1.5 text-slate-400 hover:text-white">⋯</summary>
+              <div class="absolute right-0 z-10 mt-1 w-56 space-y-2 rounded-xl border border-white/10 bg-slate-900 p-3 shadow-xl">
+                <form method="post" action="/files/rename" class="flex items-center gap-1.5">
+                  <input type="hidden" name="site" value="{{$sid}}"><input type="hidden" name="path" value="{{$cur}}"><input type="hidden" name="name" value="{{.Name}}">
+                  <input name="new_name" value="{{.Name}}" class="w-full rounded border border-white/10 bg-slate-950/60 px-2 py-1 text-xs text-slate-100 focus:border-indigo-500 focus:outline-none">
+                  <button class="rounded border border-white/10 px-2 py-1 text-xs text-slate-300 hover:bg-white/5">Rename</button>
+                </form>
+                <form method="post" action="/files/chmod" class="flex items-center gap-1.5">
+                  <input type="hidden" name="site" value="{{$sid}}"><input type="hidden" name="path" value="{{$cur}}"><input type="hidden" name="name" value="{{.Name}}">
+                  <input name="mode" value="{{.Perm}}" class="w-20 rounded border border-white/10 bg-slate-950/60 px-2 py-1 font-mono text-xs text-slate-100 focus:border-indigo-500 focus:outline-none">
+                  <button class="rounded border border-white/10 px-2 py-1 text-xs text-slate-300 hover:bg-white/5">Chmod</button>
+                </form>
+                <form method="post" action="/files/delete" onsubmit="return confirm('Delete {{.Name}}?')">
+                  <input type="hidden" name="site" value="{{$sid}}"><input type="hidden" name="path" value="{{$cur}}"><input type="hidden" name="name" value="{{.Name}}">
+                  <button class="w-full rounded border border-rose-500/20 px-2 py-1 text-xs text-rose-300 hover:bg-rose-500/10">Delete</button>
+                </form>
+              </div>
+            </details>
+          </div>
+        </td>
+      </tr>
+      {{end}}
+      {{if not .Data.Entries}}
+      <tr><td colspan="5" class="px-5 py-10 text-center text-sm text-slate-500">This folder is empty.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+  </div>
+</div>
+{{end}}

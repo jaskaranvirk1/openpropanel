@@ -1,0 +1,75 @@
+{{define "title"}}Users · Open ProPanel{{end}}
+
+{{define "content"}}
+<div class="mb-6">
+  <h1 class="text-lg font-semibold text-white">Users</h1>
+  <p class="text-sm text-slate-400">Hosting accounts. Each account owns its own domains and files.</p>
+</div>
+
+{{/* Add-user card */}}
+<div class="mb-6 rounded-2xl border border-white/5 bg-slate-900/40 p-5">
+  <h2 class="mb-4 text-sm font-semibold text-white">Create account</h2>
+  <form method="post" action="/users" class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+    <div>
+      <label class="mb-1.5 block text-xs font-medium text-slate-400">Username</label>
+      <input name="username" required placeholder="alice" pattern="[a-z0-9_-]+"
+             class="block w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none">
+    </div>
+    <div>
+      <label class="mb-1.5 block text-xs font-medium text-slate-400">Email</label>
+      <input name="email" type="email" placeholder="alice@example.com"
+             class="block w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none">
+    </div>
+    <div>
+      <label class="mb-1.5 block text-xs font-medium text-slate-400">Password</label>
+      <input name="password" type="password" required minlength="8"
+             class="block w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none">
+    </div>
+    <div>
+      <label class="mb-1.5 block text-xs font-medium text-slate-400">Role</label>
+      <select name="role" class="block w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none">
+        <option value="user">User</option>
+        <option value="admin">Admin</option>
+      </select>
+    </div>
+    <div class="flex items-end">
+      <button type="submit" class="w-full rounded-lg bg-indigo-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 hover:bg-indigo-400 transition-colors">Create</button>
+    </div>
+    <div class="sm:col-span-2 lg:col-span-5">
+      <label class="mb-1.5 block text-xs font-medium text-slate-400">System user <span class="text-slate-600">(optional — Linux user that owns this account's files &amp; runs its PHP; Open ProPanel creates it if missing, reuses it if it already exists)</span></label>
+      <input name="system_user" placeholder="e.g. alice" pattern="[a-z0-9_-]*"
+             class="block w-full max-w-xs rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none">
+    </div>
+  </form>
+</div>
+
+{{/* User list */}}
+<div class="overflow-hidden rounded-2xl border border-white/5 bg-slate-900/40">
+  <div class="divide-y divide-white/5">
+    {{range .Data.Users}}
+    <div class="flex flex-wrap items-center gap-3 px-5 py-4">
+      <div class="grid h-9 w-9 place-items-center rounded-full bg-slate-700 text-xs font-semibold uppercase text-slate-200">{{slice .Username 0 1}}</div>
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-2">
+          <span class="font-medium text-slate-100">{{.Username}}</span>
+          {{if eq .Role "admin"}}
+          <span class="rounded-full bg-indigo-500/10 px-2 py-0.5 text-xs font-medium text-indigo-300 ring-1 ring-inset ring-indigo-500/20">admin</span>
+          {{else}}
+          <span class="rounded-full bg-slate-500/10 px-2 py-0.5 text-xs text-slate-400 ring-1 ring-inset ring-white/10">user</span>
+          {{end}}
+        </div>
+        <p class="truncate text-xs text-slate-500">{{if .Email}}{{.Email}}{{else}}no email{{end}}{{if .SystemUser}} · sys: {{.SystemUser}}{{end}}</p>
+      </div>
+      <span class="text-xs text-slate-500">{{index $.Data.SitesCount .ID}} domains</span>
+      {{if ne .ID $.User.ID}}
+      <form method="post" action="/users/{{.ID}}/delete" onsubmit="return confirm('Delete user {{.Username}}? Their domains will be removed from the database.')">
+        <button class="rounded-lg border border-rose-500/20 px-3 py-1.5 text-xs text-rose-300 hover:bg-rose-500/10">Delete</button>
+      </form>
+      {{else}}
+      <span class="text-xs text-slate-600">you</span>
+      {{end}}
+    </div>
+    {{end}}
+  </div>
+</div>
+{{end}}

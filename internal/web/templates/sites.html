@@ -1,0 +1,136 @@
+{{define "title"}}Domains · Open ProPanel{{end}}
+
+{{define "content"}}
+<div class="mb-6">
+  <h1 class="text-lg font-semibold text-white">Domains</h1>
+  <p class="text-sm text-slate-400">Add domains, switch PHP versions, enable SSL and manage subdomains.</p>
+</div>
+
+{{/* Add-domain card */}}
+<div class="mb-6 rounded-2xl border border-white/5 bg-slate-900/40 p-5">
+  <h2 class="mb-4 text-sm font-semibold text-white">Add a domain</h2>
+  <form method="post" action="/sites" class="flex flex-wrap items-end gap-3">
+    <div class="min-w-[220px] flex-1">
+      <label class="mb-1.5 block text-xs font-medium text-slate-400" for="domain">Domain</label>
+      <input id="domain" name="domain" required placeholder="example.com" pattern="[a-zA-Z0-9.-]+"
+             class="block w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 focus:outline-none">
+    </div>
+    <div>
+      <label class="mb-1.5 block text-xs font-medium text-slate-400" for="php_version">PHP</label>
+      <select id="php_version" name="php_version"
+              class="rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none">
+        {{range $.Data.PHPVersions}}<option value="{{.Label}}">PHP {{.Label}}</option>{{end}}
+      </select>
+    </div>
+    {{if $.Data.IsAdmin}}
+    <div>
+      <label class="mb-1.5 block text-xs font-medium text-slate-400" for="owner_id">Owner</label>
+      <select id="owner_id" name="owner_id"
+              class="rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none">
+        {{range $.Data.Users}}<option value="{{.ID}}">{{.Username}}</option>{{end}}
+      </select>
+    </div>
+    {{end}}
+    <button type="submit"
+            class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 hover:bg-indigo-400 transition-colors">
+      Add domain
+    </button>
+  </form>
+</div>
+
+{{/* Site list */}}
+{{if not .Data.Rows}}
+<div class="rounded-2xl border border-dashed border-white/10 bg-slate-900/20 px-6 py-16 text-center">
+  <p class="text-sm text-slate-400">No domains yet. Add your first one above.</p>
+</div>
+{{end}}
+
+<div class="space-y-4">
+{{range .Data.Rows}}
+  <div class="overflow-hidden rounded-2xl border border-white/5 bg-slate-900/40">
+    {{/* header */}}
+    <div class="flex flex-wrap items-center gap-3 border-b border-white/5 px-5 py-4">
+      <div class="min-w-0 flex-1">
+        <a href="http{{if .Site.SSLEnabled}}s{{end}}://{{.Site.Domain}}" target="_blank" rel="noopener"
+           class="text-base font-medium text-white hover:text-indigo-300">{{.Site.Domain}}</a>
+        <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+          <span>PHP {{.Site.PHPVersion}}</span>
+          {{if .Site.SSLEnabled}}
+          <span class="inline-flex items-center gap-1 text-emerald-400"><span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>SSL</span>
+          {{else}}
+          <span class="text-slate-500">no SSL</span>
+          {{end}}
+          {{if $.Data.IsAdmin}}<span>· owner: {{.OwnerName}}</span>{{end}}
+          <span class="font-mono text-slate-600">{{.Site.DocRoot}}</span>
+        </div>
+      </div>
+      <div class="flex items-center gap-1.5">
+        <a href="/files?site={{.Site.ID}}" class="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/5">Files</a>
+        {{if .Site.SSLEnabled}}
+        <form method="post" action="/sites/{{.Site.ID}}/ssl">
+          <input type="hidden" name="enable" value="0">
+          <button class="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/5">Disable SSL</button>
+        </form>
+        {{else}}
+        <form method="post" action="/sites/{{.Site.ID}}/ssl">
+          <input type="hidden" name="enable" value="1">
+          <button class="rounded-lg border border-emerald-500/20 px-3 py-1.5 text-xs font-medium text-emerald-300 hover:bg-emerald-500/10">Enable SSL</button>
+        </form>
+        {{end}}
+        <form method="post" action="/sites/{{.Site.ID}}/delete" onsubmit="return confirm('Delete {{.Site.Domain}} and its subdomains? Files on disk are kept.')">
+          <button class="rounded-lg border border-rose-500/20 px-3 py-1.5 text-xs text-rose-300 hover:bg-rose-500/10">Delete</button>
+        </form>
+      </div>
+    </div>
+
+    {{/* controls */}}
+    <div class="flex flex-wrap items-end gap-6 px-5 py-4">
+      {{$cur := .Site.PHPVersion}}
+      <form method="post" action="/sites/{{.Site.ID}}/php" class="flex items-end gap-2">
+        <div>
+          <label class="mb-1.5 block text-xs font-medium text-slate-400">PHP version</label>
+          <select name="php_version" class="rounded-lg border border-white/10 bg-slate-950/60 px-3 py-1.5 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none">
+            {{range $.Data.PHPVersions}}<option value="{{.Label}}" {{if eq .Label $cur}}selected{{end}}>PHP {{.Label}}</option>{{end}}
+          </select>
+        </div>
+        <button class="rounded-lg border border-white/10 px-3 py-1.5 text-sm text-slate-300 hover:bg-white/5">Apply</button>
+      </form>
+
+      <form method="post" action="/sites/{{.Site.ID}}/subdomains" class="flex items-end gap-2">
+        <div>
+          <label class="mb-1.5 block text-xs font-medium text-slate-400">Add subdomain</label>
+          <div class="flex items-center overflow-hidden rounded-lg border border-white/10 bg-slate-950/60 focus-within:border-indigo-500">
+            <input name="label" required placeholder="blog" pattern="[a-z0-9-]+"
+                   class="w-24 bg-transparent px-3 py-1.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none">
+            <span class="pr-3 text-sm text-slate-500">.{{.Site.Domain}}</span>
+          </div>
+        </div>
+        <button class="rounded-lg border border-white/10 px-3 py-1.5 text-sm text-slate-300 hover:bg-white/5">Add</button>
+      </form>
+    </div>
+
+    {{/* subdomains */}}
+    {{if .Subs}}
+    <div class="border-t border-white/5 bg-slate-950/30 px-5 py-3">
+      <p class="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">Subdomains</p>
+      <div class="divide-y divide-white/5">
+        {{range .Subs}}
+        <div class="flex items-center gap-3 py-2">
+          <a href="http{{if .SSLEnabled}}s{{end}}://{{.Domain}}" target="_blank" rel="noopener" class="flex-1 truncate text-sm text-slate-200 hover:text-indigo-300">{{.Domain}}</a>
+          <span class="text-xs text-slate-500">PHP {{.PHPVersion}}</span>
+          <a href="/files?site={{.ID}}" class="text-xs text-slate-400 hover:text-slate-200">Files</a>
+          {{if .SSLEnabled}}
+          <form method="post" action="/sites/{{.ID}}/ssl"><input type="hidden" name="enable" value="0"><button class="text-xs text-slate-400 hover:text-slate-200">SSL off</button></form>
+          {{else}}
+          <form method="post" action="/sites/{{.ID}}/ssl"><input type="hidden" name="enable" value="1"><button class="text-xs text-emerald-400 hover:text-emerald-300">SSL on</button></form>
+          {{end}}
+          <form method="post" action="/sites/{{.ID}}/delete" onsubmit="return confirm('Delete {{.Domain}}?')"><button class="text-xs text-rose-400 hover:text-rose-300">Delete</button></form>
+        </div>
+        {{end}}
+      </div>
+    </div>
+    {{end}}
+  </div>
+{{end}}
+</div>
+{{end}}

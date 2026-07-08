@@ -1,0 +1,17 @@
+# Build output
+/bin/
+/dist/
+openpropanel
+openpropanel.exe
+
+# Local runtime state (dev fallback)
+/data/
+
+# Tailwind toolchain
+/node_modules/
+/tailwindcss
+/tailwindcss.exe
+
+# Editor / OS
+.DS_Store
+*.log

@@ -1,0 +1,69 @@
+# GoReleaser builds Open ProPanel's release artifacts: static linux binaries
+# (amd64 + arm64), .tar.gz archives, an .rpm, and checksums — then publishes
+# them to a GitHub release. Because the binary is CGO-free with the whole UI
+# embedded, the archives contain a single self-installing file.
+#
+#   Release:  git tag v0.1.0 && git push origin v0.1.0   (CI runs this)
+#   Locally:  goreleaser release --clean   (needs a GITHUB_TOKEN)
+version: 2
+
+project_name: openpropanel
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: openpropanel
+    main: ./cmd/openpropanel
+    binary: openpropanel
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: openpropanel
+    formats: [tar.gz]
+    # Version-less names so scripts/get.sh can fetch
+    # /releases/latest/download/openpropanel_linux_<arch>.tar.gz reliably.
+    name_template: "openpropanel_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - packaging/openpropanel.service
+      - scripts/get.sh
+
+nfpms:
+  - id: openpropanel
+    package_name: openpropanel
+    formats: [rpm]
+    maintainer: "Open ProPanel <noreply@example.com>"
+    description: "Open-source server control panel (cPanel alternative)"
+    license: MIT
+    homepage: "https://github.com/openpropanel/openpropanel"
+    bindir: /usr/local/bin
+    dependencies: [httpd, mod_ssl, php-fpm, certbot]
+    contents:
+      - src: packaging/openpropanel.service
+        dst: /etc/systemd/system/openpropanel.service
+    scripts:
+      postinstall: packaging/postinstall.sh
+
+checksum:
+  name_template: "checksums.txt"
+
+release:
+  github:
+    owner: openpropanel
+    name: openpropanel
+  header: |
+    ## Open ProPanel {{ .Tag }}
+
+    One-command install on AlmaLinux / RHEL:
+    ```
+    curl -fsSL https://raw.githubusercontent.com/openpropanel/openpropanel/main/scripts/get.sh | sudo bash
+    ```

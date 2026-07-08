@@ -1,0 +1,89 @@
+{{define "title"}}Settings · Open ProPanel{{end}}
+
+{{define "content"}}
+<div class="mb-6">
+  <h1 class="text-lg font-semibold text-white">Settings</h1>
+  <p class="text-sm text-slate-400">Panel configuration.</p>
+</div>
+
+{{if .Data.Dev}}
+<div class="mb-6 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+  Running in <strong>development mode</strong> (non-Linux host). System actions (Apache, php-fpm, certbot) are simulated and not applied.
+</div>
+{{end}}
+
+{{/* Web server */}}
+<div class="mb-6 rounded-2xl border border-white/5 bg-slate-900/40 p-5">
+  <div class="mb-1 flex flex-wrap items-center justify-between gap-2">
+    <h2 class="text-sm font-semibold text-white">Web server</h2>
+    <span class="rounded-full bg-slate-500/10 px-2.5 py-0.5 text-xs capitalize text-slate-300 ring-1 ring-inset ring-white/10">active: {{.Data.WebServer}}</span>
+  </div>
+  <p class="mb-4 text-xs text-slate-500">
+    Switch between Apache and Nginx. Open ProPanel regenerates every site's configuration for the target server, swaps the systemd services, and reloads. Existing sites keep working.
+  </p>
+  <form method="post" action="/settings/webserver" class="flex flex-wrap items-end gap-3"
+        onsubmit="return confirm('Switch the web server? All site configs will be regenerated and services swapped.')">
+    <div>
+      <label class="mb-1.5 block text-xs font-medium text-slate-400">Server</label>
+      <select name="web_server" class="rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none">
+        <option value="apache" {{if eq .Data.WebServer "apache"}}selected{{end}}>Apache (httpd)</option>
+        <option value="nginx" {{if eq .Data.WebServer "nginx"}}selected{{end}}>Nginx</option>
+      </select>
+    </div>
+    <button class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 hover:bg-indigo-400 transition-colors">Apply</button>
+  </form>
+</div>
+
+{{/* Panel HTTPS */}}
+<div class="mb-6 rounded-2xl border border-white/5 bg-slate-900/40 p-5">
+  <div class="mb-1 flex flex-wrap items-center justify-between gap-2">
+    <h2 class="text-sm font-semibold text-white">Panel HTTPS</h2>
+    <span class="rounded-full bg-slate-500/10 px-2.5 py-0.5 text-xs text-slate-300 ring-1 ring-inset ring-white/10">
+      current cert: {{.Data.CertKind}}{{if .Data.PanelHostname}} · {{.Data.PanelHostname}}{{end}}
+    </span>
+  </div>
+  <p class="mb-4 text-xs text-slate-500">
+    Swap the self-signed certificate for a browser-trusted Let's Encrypt certificate for the hostname you reach this panel at.
+    Requires that hostname to resolve to this server with port 80 reachable, plus an ACME email set below. Renewals apply automatically with no restart.
+  </p>
+  {{if .Data.Dev}}
+  <p class="text-sm text-amber-300">Unavailable in dev mode — needs a public server.</p>
+  {{else}}
+  <form method="post" action="/settings/panel-cert" class="flex flex-wrap items-end gap-3"
+        onsubmit="var b=this.querySelector('button');b.disabled=true;b.textContent='Requesting…';">
+    <div class="min-w-[240px] flex-1">
+      <label class="mb-1.5 block text-xs font-medium text-slate-400">Panel hostname</label>
+      <input name="panel_hostname" value="{{.Data.PanelHostname}}" placeholder="panel.yourdomain.com" pattern="[a-zA-Z0-9.-]+" required
+             class="block w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none">
+    </div>
+    <button class="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 hover:bg-emerald-400 transition-colors">Get certificate</button>
+  </form>
+  {{end}}
+</div>
+
+<div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+  {{/* SSL / ACME */}}
+  <div class="rounded-2xl border border-white/5 bg-slate-900/40 p-5">
+    <h2 class="mb-1 text-sm font-semibold text-white">Let's Encrypt</h2>
+    <p class="mb-4 text-xs text-slate-500">Contact email used when requesting certificates. Required before enabling SSL.</p>
+    <form method="post" action="/settings" class="flex flex-wrap items-end gap-3">
+      <div class="min-w-[240px] flex-1">
+        <label class="mb-1.5 block text-xs font-medium text-slate-400">ACME email</label>
+        <input name="acme_email" type="email" value="{{.Data.ACMEEmail}}" placeholder="admin@example.com"
+               class="block w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none">
+      </div>
+      <button class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 hover:bg-indigo-400 transition-colors">Save</button>
+    </form>
+  </div>
+
+  {{/* Read-only environment */}}
+  <div class="rounded-2xl border border-white/5 bg-slate-900/40 p-5">
+    <h2 class="mb-4 text-sm font-semibold text-white">Environment</h2>
+    <dl class="space-y-3 text-sm">
+      <div class="flex justify-between gap-4"><dt class="text-slate-400">Listen address</dt><dd class="font-mono text-slate-200">{{.Data.ListenAddr}}</dd></div>
+      <div class="flex justify-between gap-4"><dt class="text-slate-400">Web root</dt><dd class="font-mono text-slate-200">{{.Data.WebRoot}}</dd></div>
+      <div class="flex justify-between gap-4"><dt class="text-slate-400">Web server</dt><dd class="font-mono text-slate-200 capitalize">{{.Data.WebServer}}</dd></div>
+    </dl>
+  </div>
+</div>
+{{end}}

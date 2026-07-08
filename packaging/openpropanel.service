@@ -1,0 +1,27 @@
+[Unit]
+Description=Open ProPanel — open-source server control panel
+Documentation=https://github.com/openpropanel/openpropanel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/openpropanel --config /etc/openpropanel/config.json
+Restart=on-failure
+RestartSec=5
+
+# Open ProPanel manages Apache, PHP-FPM and certbot and writes their config, so it
+# runs privileged. StateDirectory gives it /var/lib/openpropanel with 0700 perms.
+StateDirectory=openpropanel
+StateDirectoryMode=0700
+
+# Modest hardening that does not interfere with managing system services.
+NoNewPrivileges=false
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

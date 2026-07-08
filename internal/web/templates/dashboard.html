@@ -1,0 +1,96 @@
+{{define "title"}}Dashboard · Open ProPanel{{end}}
+
+{{define "content"}}
+<div class="mb-6 flex items-end justify-between">
+  <div>
+    <h1 class="text-lg font-semibold text-white">Dashboard</h1>
+    <p class="text-sm text-slate-400">Live server health and services.</p>
+  </div>
+  <span class="hidden items-center gap-1.5 text-xs text-slate-500 sm:flex">
+    <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"></span> auto-refreshing
+  </span>
+</div>
+
+<div hx-get="/dashboard/stats" hx-trigger="every 5s" hx-swap="innerHTML">
+  {{template "dashboard-live" .Data}}
+</div>
+{{end}}
+
+{{/* dashboard-live is re-rendered by HTMX every few seconds. Its data is a dashboardVM. */}}
+{{define "dashboard-live"}}
+<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+
+  {{/* CPU */}}
+  <div class="rounded-2xl border border-white/5 bg-slate-900/40 p-5">
+    <div class="flex items-baseline justify-between">
+      <span class="text-sm text-slate-400">CPU</span>
+      <span class="text-2xl font-semibold text-white">{{pct .Stats.CPUPercent}}</span>
+    </div>
+    <div class="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-white/5">
+      <div class="h-full rounded-full {{barClass .Stats.CPUPercent}}" style="{{barWidth .Stats.CPUPercent}}"></div>
+    </div>
+    <p class="mt-2 text-xs text-slate-500">{{.Stats.CPUCores}} cores · load {{f1 .Stats.Load1}}</p>
+  </div>
+
+  {{/* Memory */}}
+  <div class="rounded-2xl border border-white/5 bg-slate-900/40 p-5">
+    <div class="flex items-baseline justify-between">
+      <span class="text-sm text-slate-400">Memory</span>
+      <span class="text-2xl font-semibold text-white">{{pct .Stats.MemUsedPercent}}</span>
+    </div>
+    <div class="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-white/5">
+      <div class="h-full rounded-full {{barClass .Stats.MemUsedPercent}}" style="{{barWidth .Stats.MemUsedPercent}}"></div>
+    </div>
+    <p class="mt-2 text-xs text-slate-500">{{hbytes .Stats.MemUsed}} / {{hbytes .Stats.MemTotal}}</p>
+  </div>
+
+  {{/* Disk */}}
+  <div class="rounded-2xl border border-white/5 bg-slate-900/40 p-5">
+    <div class="flex items-baseline justify-between">
+      <span class="text-sm text-slate-400">Disk</span>
+      <span class="text-2xl font-semibold text-white">{{pct .Stats.DiskUsedPercent}}</span>
+    </div>
+    <div class="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-white/5">
+      <div class="h-full rounded-full {{barClass .Stats.DiskUsedPercent}}" style="{{barWidth .Stats.DiskUsedPercent}}"></div>
+    </div>
+    <p class="mt-2 text-xs text-slate-500">{{hbytes .Stats.DiskUsed}} / {{hbytes .Stats.DiskTotal}}</p>
+  </div>
+
+  {{/* Host */}}
+  <div class="rounded-2xl border border-white/5 bg-slate-900/40 p-5">
+    <span class="text-sm text-slate-400">Host</span>
+    <p class="mt-1 truncate text-base font-semibold text-white">{{if .Stats.Hostname}}{{.Stats.Hostname}}{{else}}—{{end}}</p>
+    <p class="mt-1 truncate text-xs text-slate-500">{{if .Stats.OS}}{{.Stats.OS}}{{else}}unknown OS{{end}}</p>
+    <p class="mt-2 text-xs text-slate-500">up {{hdur .Stats.Uptime}}</p>
+  </div>
+</div>
+
+{{/* Services */}}
+<div class="mt-6 rounded-2xl border border-white/5 bg-slate-900/40">
+  <div class="border-b border-white/5 px-5 py-4">
+    <h2 class="text-sm font-semibold text-white">Services</h2>
+  </div>
+  <div class="divide-y divide-white/5">
+    {{range .Services}}
+    <div class="flex flex-wrap items-center gap-3 px-5 py-3.5">
+      <div class="flex min-w-0 flex-1 items-center gap-3">
+        <span class="font-mono text-sm text-slate-200">{{.Unit}}</span>
+        {{template "pill" .Active}}
+        {{if .Enabled}}<span class="text-xs text-slate-500">boot</span>{{end}}
+      </div>
+      {{if $.IsAdmin}}
+      <div class="flex items-center gap-1.5">
+        {{if .Active}}
+        <form method="post" action="/services/{{.Unit}}/reload"><button class="rounded-md border border-white/10 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/5">Reload</button></form>
+        <form method="post" action="/services/{{.Unit}}/restart"><button class="rounded-md border border-white/10 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/5">Restart</button></form>
+        <form method="post" action="/services/{{.Unit}}/stop" onsubmit="return confirm('Stop {{.Unit}}?')"><button class="rounded-md border border-rose-500/20 px-2.5 py-1 text-xs text-rose-300 hover:bg-rose-500/10">Stop</button></form>
+        {{else}}
+        <form method="post" action="/services/{{.Unit}}/start"><button class="rounded-md border border-emerald-500/20 px-2.5 py-1 text-xs text-emerald-300 hover:bg-emerald-500/10">Start</button></form>
+        {{end}}
+      </div>
+      {{end}}
+    </div>
+    {{end}}
+  </div>
+</div>
+{{end}}
