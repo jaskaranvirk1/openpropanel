@@ -1,8 +1,9 @@
-# Build output
+# Build output (anchored to repo root so they never match source dirs like
+# cmd/openpropanel/)
 /bin/
 /dist/
-openpropanel
-openpropanel.exe
+/openpropanel
+/openpropanel.exe
 
 # Local runtime state (dev fallback)
 /data/
