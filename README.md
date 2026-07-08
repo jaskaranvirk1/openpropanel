@@ -84,7 +84,7 @@ embedded, so the target server needs no build tools — just the binary.
 server's architecture, installs the runtime deps, and starts the service:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/openpropanel/openpropanel/main/scripts/get.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/jaskaranvirk1/openpropanel/main/scripts/get.sh | sudo bash
 ```
 
 **Option B — RPM:**
@@ -97,7 +97,7 @@ sudo systemctl enable --now openpropanel
 **Option C — from source (needs Go + Node):**
 
 ```bash
-git clone https://github.com/openpropanel/openpropanel.git && cd openpropanel
+git clone https://github.com/jaskaranvirk1/openpropanel.git && cd openpropanel
 make install            # cross-builds the binary, installs deps + service
 ```
 

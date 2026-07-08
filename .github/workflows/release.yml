@@ -16,17 +16,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Build the Tailwind CSS that gets embedded into the binary.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - name: Build Tailwind CSS
-        run: npx --yes tailwindcss@3 -i css/input.css -o internal/web/static/app.css --minify
-
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
 
+      # The Tailwind CSS is committed (internal/web/static/app.css) and embedded
+      # via go:embed, so no Node/CSS build step is needed here — this keeps the
+      # working tree clean for GoReleaser.
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"

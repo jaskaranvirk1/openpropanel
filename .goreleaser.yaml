@@ -1,17 +1,13 @@
 # GoReleaser builds Open ProPanel's release artifacts: static linux binaries
 # (amd64 + arm64), .tar.gz archives, an .rpm, and checksums — then publishes
-# them to a GitHub release. Because the binary is CGO-free with the whole UI
-# embedded, the archives contain a single self-installing file.
+# them to a GitHub release. The binary is CGO-free with the whole UI embedded
+# (the committed internal/web/static/app.css), so no build tools are needed at
+# release time and the git tree stays clean.
 #
 #   Release:  git tag v0.1.0 && git push origin v0.1.0   (CI runs this)
-#   Locally:  goreleaser release --clean   (needs a GITHUB_TOKEN)
 version: 2
 
 project_name: openpropanel
-
-before:
-  hooks:
-    - go mod tidy
 
 builds:
   - id: openpropanel
@@ -41,10 +37,10 @@ nfpms:
   - id: openpropanel
     package_name: openpropanel
     formats: [rpm]
-    maintainer: "Open ProPanel <noreply@example.com>"
-    description: "Open-source server control panel (cPanel alternative)"
+    maintainer: "jaskaranvirk1 <jaskaran.virk1@gmail.com>"
+    description: "Open ProPanel - open-source server control panel (cPanel alternative)"
     license: MIT
-    homepage: "https://github.com/openpropanel/openpropanel"
+    homepage: "https://github.com/jaskaranvirk1/openpropanel"
     bindir: /usr/local/bin
     dependencies: [httpd, mod_ssl, php-fpm, certbot]
     contents:
@@ -56,14 +52,13 @@ nfpms:
 checksum:
   name_template: "checksums.txt"
 
+# No release.github block: GoReleaser auto-detects the repository from the CI
+# environment, so this publishes to whatever repo the workflow runs in.
 release:
-  github:
-    owner: openpropanel
-    name: openpropanel
   header: |
     ## Open ProPanel {{ .Tag }}
 
     One-command install on AlmaLinux / RHEL:
     ```
-    curl -fsSL https://raw.githubusercontent.com/openpropanel/openpropanel/main/scripts/get.sh | sudo bash
+    curl -fsSL https://raw.githubusercontent.com/jaskaranvirk1/openpropanel/main/scripts/get.sh | sudo bash
     ```

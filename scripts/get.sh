@@ -2,7 +2,7 @@
 #
 # Open ProPanel one-command installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/openpropanel/openpropanel/main/scripts/get.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/jaskaranvirk1/openpropanel/main/scripts/get.sh | sudo bash
 #
 # Downloads the prebuilt Open ProPanel binary for this server's architecture from the
 # GitHub release, installs the runtime dependencies (Apache, PHP-FPM, certbot),
@@ -11,13 +11,13 @@
 #
 # Environment overrides:
 #   PROPANEL_VERSION   release tag to install (default: latest)
-#   PROPANEL_REPO      GitHub owner/repo (default: openpropanel/openpropanel)
+#   PROPANEL_REPO      GitHub owner/repo (default: jaskaranvirk1/openpropanel)
 #   PROPANEL_BASE_URL  download binaries from this base URL instead of GitHub
 #   PANEL_PORT         panel port (default: 2087)
 
 set -euo pipefail
 
-REPO="${PROPANEL_REPO:-openpropanel/openpropanel}"
+REPO="${PROPANEL_REPO:-jaskaranvirk1/openpropanel}"
 VERSION="${PROPANEL_VERSION:-latest}"
 BASE_URL="${PROPANEL_BASE_URL:-}"
 PANEL_PORT="${PANEL_PORT:-2087}"
