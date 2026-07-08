@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/openpropanel/openpropanel/internal/auth"
@@ -31,6 +32,13 @@ type Server struct {
 	mariadb *mariadb.Manager
 	render  *renderer
 	cfgPath string
+	login   *loginLimiter
+
+	// short-TTL cache so rapid dashboard polling coalesces into one sample
+	// instead of spawning subprocesses per request.
+	statsMu    sync.Mutex
+	statsCache dashboardVM
+	statsAt    time.Time
 }
 
 // New constructs the web server.
@@ -39,7 +47,7 @@ func New(cfg *config.Config, s *store.Store, a *auth.Manager, d *domains.Service
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, store: s, auth: a, domains: d, php: p, sysuser: su, mariadb: mdb, render: r, cfgPath: cfgPath}, nil
+	return &Server{cfg: cfg, store: s, auth: a, domains: d, php: p, sysuser: su, mariadb: mdb, render: r, cfgPath: cfgPath, login: newLoginLimiter()}, nil
 }
 
 // Handler builds the full middleware/route tree.
@@ -102,7 +110,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.Handle("/", s.auth.Middleware(app))
 
-	return logMiddleware(auth.SameOrigin(mux))
+	return logMiddleware(securityHeaders(auth.SameOrigin(mux)))
 }
 
 // Start runs the HTTP server until the context is cancelled.
@@ -123,6 +131,20 @@ func (s *Server) Start(ctx context.Context) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	// Periodically garbage-collect expired sessions.
+	go func() {
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				_ = s.store.DeleteExpiredSessions()
+			}
+		}
 	}()
 
 	if s.cfg.TLSEnabled {

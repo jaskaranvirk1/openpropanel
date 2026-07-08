@@ -53,19 +53,36 @@ fi
 
 ASSET="openpropanel_linux_${ARCH}.tar.gz"
 if [ -n "$BASE_URL" ]; then
+    case "$BASE_URL" in
+        https://*) ;;
+        *) die "PROPANEL_BASE_URL must be https://" ;;
+    esac
     URL="${BASE_URL%/}/${ASSET}"
+    SUMS_URL="${BASE_URL%/}/checksums.txt"
 elif [ "$VERSION" = "latest" ]; then
     URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
+    SUMS_URL="https://github.com/${REPO}/releases/latest/download/checksums.txt"
 else
     URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
+    SUMS_URL="https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt"
 fi
 
-# --- download + unpack -------------------------------------------------------
+# --- download + verify + unpack ---------------------------------------------
 log "Downloading Open ProPanel (${ARCH}) from ${URL}"
-if ! curl -fsSL "$URL" -o "$TMP/openpropanel.tar.gz"; then
-    die "download failed — check PROPANEL_VERSION/PROPANEL_REPO or the release exists"
+if ! curl -fsSL "$URL" -o "$TMP/${ASSET}"; then
+    die "download failed — check PROPANEL_VERSION/PROPANEL_REPO or that the release exists"
 fi
-tar -xzf "$TMP/openpropanel.tar.gz" -C "$TMP"
+# Verify the tarball against the release checksums.txt before trusting it.
+if curl -fsSL "$SUMS_URL" -o "$TMP/checksums.txt"; then
+    if command -v sha256sum >/dev/null 2>&1; then
+        ( cd "$TMP" && grep " ${ASSET}\$" checksums.txt | sha256sum -c - >/dev/null 2>&1 ) \
+            || die "checksum verification FAILED for ${ASSET} — refusing to install"
+        log "Checksum verified"
+    fi
+else
+    die "could not fetch checksums.txt to verify the download — refusing to install"
+fi
+tar -xzf "$TMP/${ASSET}" -C "$TMP"
 [ -f "$TMP/openpropanel" ] || die "archive did not contain the openpropanel binary"
 
 # --- runtime dependencies ----------------------------------------------------
@@ -108,11 +125,13 @@ if [ ! -f "$CONF_DIR/config.json" ]; then
 fi
 
 # --- firewall + SELinux ------------------------------------------------------
+# Open http/https (needed for hosted sites + Let's Encrypt) but DO NOT expose the
+# root-privileged panel port to the whole internet — the admin restricts it to
+# their own IP (instructions printed at the end).
 if command -v firewall-cmd >/dev/null 2>&1; then
-    log "Opening firewall (http, https, ${PANEL_PORT})"
+    log "Opening firewall (http, https)"
     firewall-cmd --add-service=http  --permanent >/dev/null 2>&1 || true
     firewall-cmd --add-service=https --permanent >/dev/null 2>&1 || true
-    firewall-cmd --add-port="${PANEL_PORT}/tcp" --permanent >/dev/null 2>&1 || true
     firewall-cmd --reload >/dev/null 2>&1 || true
 fi
 if command -v restorecon >/dev/null 2>&1; then
@@ -148,6 +167,10 @@ echo "   issue for bare IPs) — accept the browser warning. Point a domain at i
 echo "   and get a free Let's Encrypt cert under Settings -> Panel HTTPS."
 echo "   (Your hosted sites always get Let's Encrypt certificates.)"
 echo " * You can change the username/password after logging in."
-echo " * Keep port ${PANEL_PORT} firewalled to trusted IPs (it runs as root)."
+echo " * The panel port ${PANEL_PORT} is NOT open in the firewall (it runs as root)."
+echo "   Open it only to YOUR IP:"
+echo "     firewall-cmd --permanent --add-rich-rule='rule family=ipv4 \\"
+echo "       source address=YOUR.IP/32 port port=${PANEL_PORT} protocol=tcp accept'"
+echo "     firewall-cmd --reload"
 echo "=================================================================="
 echo

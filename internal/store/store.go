@@ -190,6 +190,14 @@ func (s *Store) CountUsers() (int, error) {
 	return n, err
 }
 
+// CountAdmins returns how many admin accounts exist (used to prevent removing
+// the last administrator).
+func (s *Store) CountAdmins() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE role = ?`, RoleAdmin).Scan(&n)
+	return n, err
+}
+
 // FirstAdmin returns the earliest-created admin account (used as the default
 // owner for imported sites).
 func (s *Store) FirstAdmin() (*User, error) {

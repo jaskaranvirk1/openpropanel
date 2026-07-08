@@ -19,6 +19,7 @@ import (
 	"sync"
 
 	"github.com/openpropanel/openpropanel/internal/config"
+	"github.com/openpropanel/openpropanel/internal/mariadb"
 	"github.com/openpropanel/openpropanel/internal/php"
 	"github.com/openpropanel/openpropanel/internal/ssl"
 	"github.com/openpropanel/openpropanel/internal/store"
@@ -40,17 +41,19 @@ type Service struct {
 	php       *php.Manager
 	ssl       *ssl.Manager
 	sysuser   *sysuser.Manager
+	mariadb   *mariadb.Manager
 
-	switchMu sync.Mutex // serializes web-server switches
+	switchMu  sync.Mutex // serializes web-server switches
+	accountMu sync.Mutex // serializes account deletion (last-admin guard)
 }
 
 // New wires the orchestrator.
-func New(cfg *config.Config, cfgPath string, s *store.Store, apacheWeb, nginxWeb webserver.Manager, p *php.Manager, sl *ssl.Manager, su *sysuser.Manager) *Service {
-	return &Service{cfg: cfg, cfgPath: cfgPath, store: s, apacheWeb: apacheWeb, nginxWeb: nginxWeb, php: p, ssl: sl, sysuser: su}
+func New(cfg *config.Config, cfgPath string, s *store.Store, apacheWeb, nginxWeb webserver.Manager, p *php.Manager, sl *ssl.Manager, su *sysuser.Manager, mdb *mariadb.Manager) *Service {
+	return &Service{cfg: cfg, cfgPath: cfgPath, store: s, apacheWeb: apacheWeb, nginxWeb: nginxWeb, php: p, ssl: sl, sysuser: su, mariadb: mdb}
 }
 
 // web returns the active web-server manager based on the current config.
-func (s *Service) web() webserver.Manager { return s.managerFor(s.cfg.WebServer) }
+func (s *Service) web() webserver.Manager { return s.managerFor(s.cfg.WebServerName()) }
 
 // managerFor returns the manager for a named web server.
 func (s *Service) managerFor(target string) webserver.Manager {
@@ -237,9 +240,19 @@ func (s *Service) AddSubdomain(ctx context.Context, parentID int64, label string
 // when the account row is deleted. Its Linux system user is removed too, but
 // only when no other account still references it (and its files are kept).
 func (s *Service) DeleteAccount(ctx context.Context, userID int64) error {
+	// Serialize deletions so the last-admin check and the delete are atomic
+	// (two concurrent admin deletes can't both slip through).
+	s.accountMu.Lock()
+	defer s.accountMu.Unlock()
+
 	acct, err := s.store.UserByID(userID)
 	if err != nil {
 		return err
+	}
+	if acct.Role == store.RoleAdmin {
+		if n, err := s.store.CountAdmins(); err == nil && n <= 1 {
+			return errors.New("cannot delete the last administrator account")
+		}
 	}
 	sites, err := s.store.ListSitesByUser(userID)
 	if err != nil {
@@ -250,6 +263,19 @@ func (s *Service) DeleteAccount(ctx context.Context, userID int64) error {
 	}
 	if err := s.web().Apply(ctx); err != nil {
 		return err
+	}
+	// Drop the account's MariaDB databases and users BEFORE removing the panel
+	// rows (which cascade-delete their records), so a deprovisioned tenant keeps
+	// no live credentials or data. Best-effort per object.
+	if dbs, e := s.store.ListDatabasesByUser(userID); e == nil {
+		for _, d := range dbs {
+			_ = s.mariadb.DropDatabase(ctx, d.Name)
+		}
+	}
+	if dus, e := s.store.ListDBUsersByUser(userID); e == nil {
+		for _, du := range dus {
+			_ = s.mariadb.DropUser(ctx, du.Name)
+		}
 	}
 	if err := s.store.DeleteUser(userID); err != nil {
 		return err
@@ -461,17 +487,17 @@ func (s *Service) SwitchWebServer(ctx context.Context, target string) error {
 	s.switchMu.Lock()
 	defer s.switchMu.Unlock()
 
-	oldTarget := s.cfg.WebServer
+	oldTarget := s.cfg.WebServerName()
 	if target == oldTarget {
 		return nil
 	}
 	oldService := s.cfg.ActiveWebService()
-	s.cfg.WebServer = target
+	s.cfg.SetWebServer(target)
 	newService := s.cfg.ActiveWebService()
 
 	sites, err := s.store.ListSites()
 	if err != nil {
-		s.cfg.WebServer = oldTarget
+		s.cfg.SetWebServer(oldTarget)
 		return err
 	}
 
@@ -483,13 +509,13 @@ func (s *Service) SwitchWebServer(ctx context.Context, target string) error {
 			continue
 		}
 		if err := s.renderVHost(site); err != nil {
-			s.cfg.WebServer = oldTarget
+			s.cfg.SetWebServer(oldTarget)
 			return err
 		}
 	}
 	// 2. Validate before touching any service; a failure here is a clean no-op.
 	if _, err := s.web().Validate(ctx); err != nil {
-		s.cfg.WebServer = oldTarget
+		s.cfg.SetWebServer(oldTarget)
 		return fmt.Errorf("generated %s configuration is invalid: %w", target, err)
 	}
 	// 3. Swap services. Up to here the old server + sockets are intact, so a
@@ -499,7 +525,7 @@ func (s *Service) SwitchWebServer(ctx context.Context, target string) error {
 		_ = system.ServiceAction(ctx, "disable", oldService)
 		_ = system.ServiceAction(ctx, "enable", newService)
 		if err := system.ServiceAction(ctx, "start", newService); err != nil {
-			s.cfg.WebServer = oldTarget
+			s.cfg.SetWebServer(oldTarget)
 			_ = system.ServiceAction(ctx, "enable", oldService)
 			_ = system.ServiceAction(ctx, "start", oldService)
 			return fmt.Errorf("failed to start %s (reverted to %s): %w", newService, oldTarget, err)

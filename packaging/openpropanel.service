@@ -1,6 +1,6 @@
 [Unit]
 Description=Open ProPanel — open-source server control panel
-Documentation=https://github.com/openpropanel/openpropanel
+Documentation=https://github.com/jaskaranvirk1/openpropanel
 After=network-online.target
 Wants=network-online.target
 
@@ -15,11 +15,20 @@ RestartSec=5
 StateDirectory=openpropanel
 StateDirectoryMode=0700
 
-# Modest hardening that does not interfere with managing system services.
-NoNewPrivileges=false
-ProtectHome=true
+# Hardening that still lets the panel do its job (write /etc and /var config,
+# run certbot/httpd/php-fpm, and provision system users). ProtectSystem=true
+# keeps /usr and /boot read-only while leaving /etc + /var writable. We do NOT
+# set ProtectHome — the panel provisions tenant home directories and may serve
+# doc roots located under /home.
+ProtectSystem=true
+PrivateTmp=true
 ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
 ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
 

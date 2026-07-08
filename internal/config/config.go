@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 )
 
 // Config is the fully-resolved configuration used across the application.
@@ -67,12 +68,21 @@ type Config struct {
 	// can auto-issue a Let's Encrypt certificate for it (Settings → Panel HTTPS).
 	PanelHostname string `json:"panel_hostname"`
 
+	// PMARoot is the parent directory phpMyAdmin is installed under (the app
+	// lives at PMARoot/phpmyadmin). Served behind the panel at /phpmyadmin.
+	PMARoot string `json:"pma_root"`
+
 	// SessionKey signs session cookies. Generated on first run if empty.
 	SessionKey string `json:"session_key"`
 
 	// Dev is true when running on a non-production/non-Linux host. In dev mode
 	// system-mutating actions are simulated rather than executed.
 	Dev bool `json:"-"`
+
+	// mu guards the fields mutated at runtime (WebServer, TLSCert, TLSKey,
+	// PanelHostname) against concurrent request-path readers. Access those
+	// fields only through the accessor methods below.
+	mu sync.RWMutex
 }
 
 // Default returns a Config populated with AlmaLinux-appropriate defaults, or a
@@ -90,6 +100,7 @@ func Default() *Config {
 		NginxService:    "nginx",
 		PHPFPMService:   "php-fpm",
 		LetsEncryptLive: "/etc/letsencrypt/live",
+		PMARoot:         "/usr/share/openpropanel",
 	}
 
 	if runtime.GOOS != "linux" {
@@ -104,6 +115,7 @@ func Default() *Config {
 		c.NginxVhostDir = filepath.Join(base, "nginx")
 		c.PHPFPMConfDir = filepath.Join(base, "php-fpm.d")
 		c.LetsEncryptLive = filepath.Join(base, "letsencrypt", "live")
+		c.PMARoot = filepath.Join(base, "pma")
 	}
 
 	// TLS: serve HTTPS in production, plain HTTP for local dev (avoids cert
@@ -118,8 +130,33 @@ func Default() *Config {
 func (c *Config) SelfSignedCertPath() string { return filepath.Join(c.DataDir, "tls", "cert.pem") }
 func (c *Config) SelfSignedKeyPath() string  { return filepath.Join(c.DataDir, "tls", "key.pem") }
 
+// PhpMyAdminDir is where the phpMyAdmin app files live.
+func (c *Config) PhpMyAdminDir() string { return filepath.Join(c.PMARoot, "phpmyadmin") }
+
+// PMASocket is the php-fpm unix socket the panel dispatches phpMyAdmin's PHP to.
+func (c *Config) PMASocket() string {
+	if c.Dev {
+		return filepath.Join(c.DataDir, "run", "openpropanel-pma.sock")
+	}
+	return "/run/php-fpm/openpropanel-pma.sock"
+}
+
+// WebServerName returns the active web server ("apache"|"nginx"), locked.
+func (c *Config) WebServerName() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.WebServer
+}
+
+// SetWebServer atomically changes the active web server.
+func (c *Config) SetWebServer(v string) {
+	c.mu.Lock()
+	c.WebServer = v
+	c.mu.Unlock()
+}
+
 // UseNginx reports whether Nginx is the active web server.
-func (c *Config) UseNginx() bool { return c.WebServer == "nginx" }
+func (c *Config) UseNginx() bool { return c.WebServerName() == "nginx" }
 
 // ActiveWebService is the systemd unit name of the active web server.
 func (c *Config) ActiveWebService() string {
@@ -136,6 +173,20 @@ func (c *Config) WebServerUser() string {
 		return "nginx"
 	}
 	return "apache"
+}
+
+// TLSOverride returns the operator/LE override cert+key paths, locked.
+func (c *Config) TLSOverride() (cert, key string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.TLSCert, c.TLSKey
+}
+
+// SetTLSOverride atomically records a new panel certificate + hostname.
+func (c *Config) SetTLSOverride(cert, key, host string) {
+	c.mu.Lock()
+	c.TLSCert, c.TLSKey, c.PanelHostname = cert, key, host
+	c.mu.Unlock()
 }
 
 // Load reads configuration from a JSON file, layering it over the defaults.
@@ -166,7 +217,9 @@ func (c *Config) Save(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	c.mu.RLock()
 	b, err := json.MarshalIndent(c, "", "  ")
+	c.mu.RUnlock()
 	if err != nil {
 		return err
 	}

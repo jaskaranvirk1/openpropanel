@@ -111,6 +111,14 @@ var vhostTmpl = template.Must(template.New("vhost").Parse(`# Managed by Open Pro
     <Directory "{{.DocRoot}}/.well-known/acme-challenge/">
         Require all granted
     </Directory>
+
+    # Deny dotfiles/dirs (.git, .env, .user.ini, ...) except .well-known.
+    <DirectoryMatch "/\.(?!well-known)">
+        Require all denied
+    </DirectoryMatch>
+    <FilesMatch "^\.">
+        Require all denied
+    </FilesMatch>
 {{- if .SSL}}
 
     RewriteEngine On
@@ -119,7 +127,7 @@ var vhostTmpl = template.Must(template.New("vhost").Parse(`# Managed by Open Pro
 {{- else}}
 
     <Directory "{{.DocRoot}}">
-        Options -Indexes +FollowSymLinks
+        Options -Indexes +SymLinksIfOwnerMatch
         AllowOverride All
         Require all granted
     </Directory>
@@ -147,8 +155,16 @@ var vhostTmpl = template.Must(template.New("vhost").Parse(`# Managed by Open Pro
     SSLCertificateFile "{{.CertFile}}"
     SSLCertificateKeyFile "{{.KeyFile}}"
 
+    # Deny dotfiles/dirs (.git, .env, .user.ini, ...) except .well-known.
+    <DirectoryMatch "/\.(?!well-known)">
+        Require all denied
+    </DirectoryMatch>
+    <FilesMatch "^\.">
+        Require all denied
+    </FilesMatch>
+
     <Directory "{{.DocRoot}}">
-        Options -Indexes +FollowSymLinks
+        Options -Indexes +SymLinksIfOwnerMatch
         AllowOverride All
         Require all granted
     </Directory>

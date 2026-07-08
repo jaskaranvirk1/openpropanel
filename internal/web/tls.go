@@ -43,9 +43,9 @@ func newCertManager(cfg *config.Config) *certManager { return &certManager{cfg: 
 // resolvePaths returns the cert/key files to serve right now: the override if
 // it is fully present, otherwise the self-signed fallback.
 func (cm *certManager) resolvePaths() (cert, key string) {
-	if cm.cfg.TLSCert != "" && cm.cfg.TLSKey != "" &&
-		fileExists(cm.cfg.TLSCert) && fileExists(cm.cfg.TLSKey) {
-		return cm.cfg.TLSCert, cm.cfg.TLSKey
+	oc, ok := cm.cfg.TLSOverride()
+	if oc != "" && ok != "" && fileExists(oc) && fileExists(ok) {
+		return oc, ok
 	}
 	return cm.cfg.SelfSignedCertPath(), cm.cfg.SelfSignedKeyPath()
 }
@@ -132,25 +132,13 @@ func generateSelfSigned(certPath, keyPath string) error {
 	return writePEM(keyPath, "PRIVATE KEY", keyDER, 0o600)
 }
 
-func certHostnames() []string {
-	hosts := []string{"localhost"}
-	if h, err := os.Hostname(); err == nil && h != "" {
-		hosts = append(hosts, h)
-	}
-	return hosts
-}
+// certHostnames / certIPs keep the self-signed SANs minimal (loopback only) so
+// the panel never advertises its private/secondary interface addresses or
+// hostname to an unauthenticated TLS client. A real certificate for a public
+// name is obtained via Settings → Panel HTTPS.
+func certHostnames() []string { return []string{"localhost"} }
 
-func certIPs() []net.IP {
-	ips := []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback}
-	if addrs, err := net.InterfaceAddrs(); err == nil {
-		for _, a := range addrs {
-			if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-				ips = append(ips, ipnet.IP)
-			}
-		}
-	}
-	return ips
-}
+func certIPs() []net.IP { return []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback} }
 
 func writePEM(path, blockType string, der []byte, perm os.FileMode) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)

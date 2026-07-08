@@ -2,11 +2,15 @@ package web
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/openpropanel/openpropanel/internal/auth"
 	"github.com/openpropanel/openpropanel/internal/php"
@@ -17,6 +21,18 @@ import (
 // usernameRe validates panel/system account names: 3-32 chars of lowercase
 // letters, digits, underscore or hyphen, starting with a letter or digit.
 var usernameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{2,31}$`)
+
+// opErr sanitizes an error from a system operation for display. It always logs
+// the full detail server-side; non-admin users get a generic message so raw
+// command output (absolute paths, httpd -t / certbot / mysql text, other
+// tenants' data) never leaks to them. Admins may see the detail to debug.
+func (s *Server) opErr(r *http.Request, err error) string {
+	log.Printf("operation error [%s %s]: %v", r.Method, r.URL.Path, err)
+	if u := auth.UserFrom(r.Context()); u != nil && u.Role == store.RoleAdmin {
+		return err.Error()
+	}
+	return "The operation failed. Please review your input and try again."
+}
 
 // ---------------------------------------------------------------------------
 // view models
@@ -66,11 +82,30 @@ func (s *Server) getLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if ok, wait := s.login.allow(ip); !ok {
+		redirect(w, r, "/login", "err",
+			"Too many failed attempts. Try again in "+wait.String()+".")
+		return
+	}
 	username := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
-	if _, err := s.auth.Login(w, username, password); err != nil {
+
+	// Bound concurrent bcrypt work so a login flood can't monopolise the CPU.
+	release := s.login.acquire()
+	user, err := s.auth.Login(w, username, password)
+	release()
+
+	if err != nil {
+		s.login.fail(ip)
 		redirect(w, r, "/login", "err", "Invalid username or password")
 		return
+	}
+	s.login.success(ip)
+	// Once an admin has logged in, the plaintext first-run credential file has
+	// served its purpose — remove it.
+	if user.Role == store.RoleAdmin {
+		_ = os.Remove(filepath.Join(s.cfg.DataDir, "initial-admin-password.txt"))
 	}
 	http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 }
@@ -84,13 +119,26 @@ func (s *Server) postLogout(w http.ResponseWriter, r *http.Request) {
 // dashboard
 // ---------------------------------------------------------------------------
 
+// dashboardData samples host stats + services, cached for a few seconds and
+// serialized so rapid polling (every 5s per client, times N clients) coalesces
+// into a single sample instead of spawning ~8 subprocesses per request.
 func (s *Server) dashboardData(ctx context.Context, isAdmin bool) dashboardVM {
-	return dashboardVM{
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	if !s.statsAt.IsZero() && time.Since(s.statsAt) < 3*time.Second {
+		vm := s.statsCache
+		vm.IsAdmin = isAdmin
+		return vm
+	}
+	vm := dashboardVM{
 		Stats: system.Collect(),
 		Services: system.InspectServices(ctx,
 			s.cfg.ActiveWebService(), s.cfg.PHPFPMService, "mariadb", "firewalld"),
-		IsAdmin: isAdmin,
 	}
+	s.statsCache = vm
+	s.statsAt = time.Now()
+	vm.IsAdmin = isAdmin
+	return vm
 }
 
 func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
@@ -205,7 +253,7 @@ func (s *Server) postCreateSite(w http.ResponseWriter, r *http.Request) {
 	domain := r.FormValue("domain")
 	phpVersion := r.FormValue("php_version")
 	if _, err := s.domains.CreateSite(r.Context(), owner, domain, phpVersion); err != nil {
-		redirect(w, r, "/sites", "err", err.Error())
+		redirect(w, r, "/sites", "err", s.opErr(r, err))
 		return
 	}
 	redirect(w, r, "/sites", "msg", "Domain "+domain+" created")
@@ -217,7 +265,7 @@ func (s *Server) postDeleteSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.domains.DeleteSite(r.Context(), site.ID); err != nil {
-		redirect(w, r, "/sites", "err", err.Error())
+		redirect(w, r, "/sites", "err", s.opErr(r, err))
 		return
 	}
 	redirect(w, r, "/sites", "msg", site.Domain+" deleted")
@@ -230,7 +278,7 @@ func (s *Server) postChangePHP(w http.ResponseWriter, r *http.Request) {
 	}
 	version := r.FormValue("php_version")
 	if err := s.domains.ChangePHP(r.Context(), site.ID, version); err != nil {
-		redirect(w, r, "/sites", "err", err.Error())
+		redirect(w, r, "/sites", "err", s.opErr(r, err))
 		return
 	}
 	redirect(w, r, "/sites", "msg", site.Domain+" switched to PHP "+version)
@@ -249,7 +297,7 @@ func (s *Server) postToggleSSL(w http.ResponseWriter, r *http.Request) {
 		err = s.domains.DisableSSL(r.Context(), site.ID)
 	}
 	if err != nil {
-		redirect(w, r, "/sites", "err", err.Error())
+		redirect(w, r, "/sites", "err", s.opErr(r, err))
 		return
 	}
 	msg := "SSL enabled for " + site.Domain
@@ -266,7 +314,7 @@ func (s *Server) postAddSubdomain(w http.ResponseWriter, r *http.Request) {
 	}
 	label := r.FormValue("label")
 	if _, err := s.domains.AddSubdomain(r.Context(), site.ID, label); err != nil {
-		redirect(w, r, "/sites", "err", err.Error())
+		redirect(w, r, "/sites", "err", s.opErr(r, err))
 		return
 	}
 	redirect(w, r, "/sites", "msg", "Subdomain "+label+"."+site.Domain+" created")
@@ -301,7 +349,7 @@ func (s *Server) postAdoptSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.domains.AdoptSite(r.Context(), site.ID, r.FormValue("php_version")); err != nil {
-		redirect(w, r, "/sites", "err", err.Error())
+		redirect(w, r, "/sites", "err", s.opErr(r, err))
 		return
 	}
 	redirect(w, r, "/sites", "msg", site.Domain+" adopted — now fully managed")
@@ -431,9 +479,10 @@ func (s *Server) postDeleteUser(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	u := auth.UserFrom(r.Context())
+	tlsCert, _ := s.cfg.TLSOverride()
 	certKind := "self-signed"
-	if s.cfg.TLSCert != "" {
-		if strings.Contains(s.cfg.TLSCert, "letsencrypt") {
+	if tlsCert != "" {
+		if strings.Contains(tlsCert, "letsencrypt") {
 			certKind = "Let's Encrypt"
 		} else {
 			certKind = "custom"
@@ -444,7 +493,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		Flash: r.URL.Query().Get("msg"), Error: r.URL.Query().Get("err"),
 		Data: settingsVM{
 			ACMEEmail: s.cfg.ACMEEmail, ListenAddr: s.cfg.ListenAddr,
-			WebRoot: s.cfg.WebRoot, WebServer: s.cfg.WebServer, Dev: s.cfg.Dev,
+			WebRoot: s.cfg.WebRoot, WebServer: s.cfg.WebServerName(), Dev: s.cfg.Dev,
 			TLSEnabled: s.cfg.TLSEnabled, PanelHostname: s.cfg.PanelHostname, CertKind: certKind,
 		},
 	})
@@ -463,7 +512,7 @@ func (s *Server) postPanelCert(w http.ResponseWriter, r *http.Request) {
 		redirect(w, r, "/settings", "err", "Certificate request failed: "+err.Error())
 		return
 	}
-	s.cfg.TLSCert, s.cfg.TLSKey, s.cfg.PanelHostname = certFile, keyFile, normHost
+	s.cfg.SetTLSOverride(certFile, keyFile, normHost)
 	if err := s.cfg.Save(s.cfgPath); err != nil {
 		redirect(w, r, "/settings", "err", "Issued the certificate but could not save config: "+err.Error())
 		return
@@ -480,7 +529,7 @@ func (s *Server) postWebServer(w http.ResponseWriter, r *http.Request) {
 		redirect(w, r, "/settings", "err", "Choose apache or nginx")
 		return
 	}
-	if target == s.cfg.WebServer {
+	if target == s.cfg.WebServerName() {
 		redirect(w, r, "/settings", "msg", "Already using "+target)
 		return
 	}

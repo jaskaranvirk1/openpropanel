@@ -64,10 +64,11 @@ install -m 0644 "$SCRIPT_DIR/openpropanel.service" "$UNIT_DEST"
 systemctl daemon-reload
 
 if command -v firewall-cmd >/dev/null 2>&1; then
-    log "Opening firewall (http, https, ${PANEL_PORT}/tcp)"
+    # Open http/https for hosted sites + Let's Encrypt. Do NOT expose the
+    # root-privileged panel port to everyone — the admin restricts it to their IP.
+    log "Opening firewall (http, https)"
     firewall-cmd --add-service=http  --permanent  >/dev/null || true
     firewall-cmd --add-service=https --permanent  >/dev/null || true
-    firewall-cmd --add-port="${PANEL_PORT}/tcp" --permanent >/dev/null || true
     firewall-cmd --reload >/dev/null || true
 fi
 
@@ -107,6 +108,7 @@ echo " * Opened by IP, the panel uses a self-signed HTTPS cert (Let's Encrypt"
 echo "   can't issue for bare IPs) — accept the browser warning. Point a domain"
 echo "   at it for a free Let's Encrypt cert under Settings -> Panel HTTPS."
 echo " * You can change the username/password after logging in."
-echo " * Keep port ${PANEL_PORT} firewalled to trusted IPs (it runs as root)."
+echo " * Panel port ${PANEL_PORT} is NOT opened in the firewall; open it only to YOUR IP:"
+echo "     firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=YOUR.IP/32 port port=${PANEL_PORT} protocol=tcp accept' && firewall-cmd --reload"
 echo "=================================================================="
 echo

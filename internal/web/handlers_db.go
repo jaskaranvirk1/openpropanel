@@ -140,7 +140,7 @@ func (s *Server) postCreateDatabase(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.mariadb.CreateDatabase(r.Context(), name); err != nil {
 		_ = s.store.DeleteDatabase(db.ID)
-		redirect(w, r, "/databases", "err", err.Error())
+		redirect(w, r, "/databases", "err", s.opErr(r, err))
 		return
 	}
 	redirect(w, r, "/databases", "msg", "Database "+name+" created")
@@ -158,11 +158,11 @@ func (s *Server) postDeleteDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.mariadb.DropDatabase(r.Context(), db.Name); err != nil {
-		redirect(w, r, "/databases", "err", err.Error())
+		redirect(w, r, "/databases", "err", s.opErr(r, err))
 		return
 	}
 	if err := s.store.DeleteDatabase(db.ID); err != nil {
-		redirect(w, r, "/databases", "err", err.Error())
+		redirect(w, r, "/databases", "err", s.opErr(r, err))
 		return
 	}
 	redirect(w, r, "/databases", "msg", "Database "+db.Name+" deleted")
@@ -197,7 +197,7 @@ func (s *Server) postCreateDBUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.mariadb.CreateUser(r.Context(), name, password); err != nil {
 		_ = s.store.DeleteDBUser(du.ID)
-		redirect(w, r, "/databases", "err", err.Error())
+		redirect(w, r, "/databases", "err", s.opErr(r, err))
 		return
 	}
 	redirect(w, r, "/databases", "msg", "Database user "+name+" created")
@@ -215,11 +215,11 @@ func (s *Server) postDeleteDBUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.mariadb.DropUser(r.Context(), du.Name); err != nil {
-		redirect(w, r, "/databases", "err", err.Error())
+		redirect(w, r, "/databases", "err", s.opErr(r, err))
 		return
 	}
 	if err := s.store.DeleteDBUser(du.ID); err != nil {
-		redirect(w, r, "/databases", "err", err.Error())
+		redirect(w, r, "/databases", "err", s.opErr(r, err))
 		return
 	}
 	redirect(w, r, "/databases", "msg", "Database user "+du.Name+" deleted")
@@ -242,7 +242,7 @@ func (s *Server) postResetDBUserPassword(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := s.mariadb.SetPassword(r.Context(), du.Name, password); err != nil {
-		redirect(w, r, "/databases", "err", err.Error())
+		redirect(w, r, "/databases", "err", s.opErr(r, err))
 		return
 	}
 	redirect(w, r, "/databases", "msg", "Password updated for "+du.Name)
@@ -277,23 +277,23 @@ func (s *Server) grantOrRevoke(w http.ResponseWriter, r *http.Request, grant boo
 
 	if grant {
 		if err := s.mariadb.Grant(r.Context(), db.Name, du.Name); err != nil {
-			redirect(w, r, "/databases", "err", err.Error())
+			redirect(w, r, "/databases", "err", s.opErr(r, err))
 			return
 		}
 		if err := s.store.CreateGrant(db.ID, du.ID); err != nil {
 			_ = s.mariadb.Revoke(r.Context(), db.Name, du.Name) // roll back the live grant
-			redirect(w, r, "/databases", "err", err.Error())
+			redirect(w, r, "/databases", "err", s.opErr(r, err))
 			return
 		}
 		redirect(w, r, "/databases", "msg", du.Name+" granted access to "+db.Name)
 		return
 	}
 	if err := s.mariadb.Revoke(r.Context(), db.Name, du.Name); err != nil {
-		redirect(w, r, "/databases", "err", err.Error())
+		redirect(w, r, "/databases", "err", s.opErr(r, err))
 		return
 	}
 	if err := s.store.DeleteGrant(db.ID, du.ID); err != nil {
-		redirect(w, r, "/databases", "err", err.Error())
+		redirect(w, r, "/databases", "err", s.opErr(r, err))
 		return
 	}
 	redirect(w, r, "/databases", "msg", du.Name+" access to "+db.Name+" revoked")

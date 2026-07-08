@@ -98,7 +98,7 @@ func run() error {
 	sslMgr := ssl.New(cfg)
 	sysuserMgr := sysuser.New(cfg)
 	mariadbMgr := mariadb.New(cfg)
-	domainSvc := domains.New(cfg, *cfgPath, st, apacheMgr, nginxMgr, phpMgr, sslMgr, sysuserMgr)
+	domainSvc := domains.New(cfg, *cfgPath, st, apacheMgr, nginxMgr, phpMgr, sslMgr, sysuserMgr, mariadbMgr)
 
 	// Adopt any vhosts already configured on the host so they show up in the
 	// panel immediately (imported, read-only until explicitly adopted).
