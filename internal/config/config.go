@@ -100,7 +100,12 @@ func Default() *Config {
 		NginxService:    "nginx",
 		PHPFPMService:   "php-fpm",
 		LetsEncryptLive: "/etc/letsencrypt/live",
-		PMARoot:         "/usr/share/openpropanel",
+		// phpMyAdmin lives under /var (NOT /usr): the systemd unit sets
+		// ProtectSystem=true, which mounts /usr read-only, so the panel could not
+		// install there. It is also deliberately OUTSIDE the 0700 StateDirectory
+		// (/var/lib/openpropanel) so the unprivileged phpMyAdmin pool user can
+		// traverse in to read the app files.
+		PMARoot: "/var/lib/openpropanel-pma",
 	}
 
 	if runtime.GOOS != "linux" {

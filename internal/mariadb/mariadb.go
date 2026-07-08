@@ -78,13 +78,32 @@ func (m *Manager) DropUser(ctx context.Context, name string) error {
 // Grant gives a user ALL PRIVILEGES on a database.
 func (m *Manager) Grant(ctx context.Context, dbName, userName string) error {
 	return m.exec(ctx, fmt.Sprintf(
-		"GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'localhost'; FLUSH PRIVILEGES;", dbName, userName))
+		"GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'localhost'; FLUSH PRIVILEGES;", escapeGrantDB(dbName), userName))
 }
 
 // Revoke removes a user's privileges on a database.
 func (m *Manager) Revoke(ctx context.Context, dbName, userName string) error {
 	return m.exec(ctx, fmt.Sprintf(
-		"REVOKE ALL PRIVILEGES ON `%s`.* FROM '%s'@'localhost'; FLUSH PRIVILEGES;", dbName, userName))
+		"REVOKE ALL PRIVILEGES ON `%s`.* FROM '%s'@'localhost'; FLUSH PRIVILEGES;", escapeGrantDB(dbName), userName))
+}
+
+// escapeGrantDB escapes the LIKE wildcards ('_' and '%') in a database name for
+// the `db`.* position of GRANT/REVOKE. MySQL/MariaDB match that position with
+// LIKE semantics, where '_' and '%' are wildcards and backtick quoting does NOT
+// suppress them — only a backslash escape pins the grant to one literal
+// database. Every panel db name is "<owner>_<suffix>" and contains underscores,
+// so without this a grant intended for `alice_wp` would also authorize
+// `aliceXwp`, `alice2_wp`, etc. — a cross-tenant privilege leak when one
+// account name is a prefix of another. Inside a backtick-quoted identifier the
+// backslash is preserved verbatim (identifier parsing performs no escape
+// processing, so the NO_BACKSLASH_ESCAPES session mode does not apply here), and
+// the privilege system then treats "\_" / "\%" as the literal characters.
+// Callers validate names to [a-z0-9_-], so only '_' can actually occur, but '%'
+// is escaped too as defence in depth against any future loosening.
+func escapeGrantDB(name string) string {
+	name = strings.ReplaceAll(name, "_", `\_`)
+	name = strings.ReplaceAll(name, "%", `\%`)
+	return name
 }
 
 // escapeLiteral makes a string safe inside a single-quoted SQL string literal

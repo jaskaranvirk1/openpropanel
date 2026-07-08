@@ -32,10 +32,11 @@ type dbUserRow struct {
 }
 
 type databasesVM struct {
-	Databases []dbRow
-	DBUsers   []dbUserRow
-	IsAdmin   bool
-	Users     []*store.User
+	Databases    []dbRow
+	DBUsers      []dbUserRow
+	IsAdmin      bool
+	Users        []*store.User
+	PMAInstalled bool
 }
 
 // ---------------------------------------------------------------------------
@@ -103,7 +104,7 @@ func (s *Server) getDatabases(w http.ResponseWriter, r *http.Request) {
 		userRows = append(userRows, dbUserRow{User: du, OwnerName: names[du.UserID]})
 	}
 
-	vm := databasesVM{Databases: rows, DBUsers: userRows, IsAdmin: isAdmin}
+	vm := databasesVM{Databases: rows, DBUsers: userRows, IsAdmin: isAdmin, PMAInstalled: s.pma.Installed()}
 	if isAdmin {
 		vm.Users, _ = s.store.ListUsers()
 	}

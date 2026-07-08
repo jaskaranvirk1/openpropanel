@@ -23,6 +23,7 @@ import (
 	"github.com/openpropanel/openpropanel/internal/mariadb"
 	"github.com/openpropanel/openpropanel/internal/nginx"
 	"github.com/openpropanel/openpropanel/internal/php"
+	"github.com/openpropanel/openpropanel/internal/phpmyadmin"
 	"github.com/openpropanel/openpropanel/internal/ssl"
 	"github.com/openpropanel/openpropanel/internal/store"
 	"github.com/openpropanel/openpropanel/internal/sysuser"
@@ -98,6 +99,7 @@ func run() error {
 	sslMgr := ssl.New(cfg)
 	sysuserMgr := sysuser.New(cfg)
 	mariadbMgr := mariadb.New(cfg)
+	pmaMgr := phpmyadmin.New(cfg)
 	domainSvc := domains.New(cfg, *cfgPath, st, apacheMgr, nginxMgr, phpMgr, sslMgr, sysuserMgr, mariadbMgr)
 
 	// Adopt any vhosts already configured on the host so they show up in the
@@ -108,7 +110,7 @@ func run() error {
 		log.Printf("imported %d existing site(s) already configured on this host", n)
 	}
 
-	srv, err := web.New(cfg, st, authMgr, domainSvc, phpMgr, sysuserMgr, mariadbMgr, *cfgPath)
+	srv, err := web.New(cfg, st, authMgr, domainSvc, phpMgr, sysuserMgr, mariadbMgr, pmaMgr, *cfgPath)
 	if err != nil {
 		return fmt.Errorf("init web server: %w", err)
 	}

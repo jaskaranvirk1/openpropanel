@@ -17,6 +17,7 @@ import (
 	"github.com/openpropanel/openpropanel/internal/domains"
 	"github.com/openpropanel/openpropanel/internal/mariadb"
 	"github.com/openpropanel/openpropanel/internal/php"
+	"github.com/openpropanel/openpropanel/internal/phpmyadmin"
 	"github.com/openpropanel/openpropanel/internal/store"
 	"github.com/openpropanel/openpropanel/internal/sysuser"
 )
@@ -30,9 +31,11 @@ type Server struct {
 	php     *php.Manager
 	sysuser *sysuser.Manager
 	mariadb *mariadb.Manager
-	render  *renderer
-	cfgPath string
-	login   *loginLimiter
+	pma     *phpmyadmin.Manager
+	render   *renderer
+	cfgPath  string
+	login    *loginLimiter
+	pmaLogin *loginLimiter // throttles phpMyAdmin's own login POSTs
 
 	// short-TTL cache so rapid dashboard polling coalesces into one sample
 	// instead of spawning subprocesses per request.
@@ -42,12 +45,12 @@ type Server struct {
 }
 
 // New constructs the web server.
-func New(cfg *config.Config, s *store.Store, a *auth.Manager, d *domains.Service, p *php.Manager, su *sysuser.Manager, mdb *mariadb.Manager, cfgPath string) (*Server, error) {
+func New(cfg *config.Config, s *store.Store, a *auth.Manager, d *domains.Service, p *php.Manager, su *sysuser.Manager, mdb *mariadb.Manager, pma *phpmyadmin.Manager, cfgPath string) (*Server, error) {
 	r, err := newRenderer()
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, store: s, auth: a, domains: d, php: p, sysuser: su, mariadb: mdb, render: r, cfgPath: cfgPath, login: newLoginLimiter()}, nil
+	return &Server{cfg: cfg, store: s, auth: a, domains: d, php: p, sysuser: su, mariadb: mdb, pma: pma, render: r, cfgPath: cfgPath, login: newLoginLimiter(), pmaLogin: newLoginLimiter()}, nil
 }
 
 // Handler builds the full middleware/route tree.
@@ -87,6 +90,13 @@ func (s *Server) Handler() http.Handler {
 	app.HandleFunc("POST /db-users/{id}/password", s.postResetDBUserPassword)
 	app.HandleFunc("POST /db-grants", s.postGrant)
 	app.HandleFunc("POST /db-grants/revoke", s.postRevoke)
+
+	// phpMyAdmin: install is admin-only; the app itself is served (behind the
+	// panel session) to any authenticated user, who then authenticates again to
+	// MariaDB with their own credentials. The more-specific /phpmyadmin/install
+	// pattern takes precedence over the /phpmyadmin/ subtree.
+	app.Handle("POST /phpmyadmin/install", auth.RequireAdmin(http.HandlerFunc(s.postInstallPMA)))
+	app.HandleFunc("/phpmyadmin/", s.servePMA)
 
 	app.HandleFunc("GET /files", s.getFiles)
 	app.HandleFunc("GET /files/edit", s.getFileEdit)

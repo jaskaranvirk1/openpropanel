@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -111,18 +112,28 @@ func clientIP(r *http.Request) string {
 }
 
 // securityHeaders sets baseline hardening headers on every response.
+//
+// The strict Content-Security-Policy and X-Frame-Options are scoped to the
+// panel's own pages. phpMyAdmin (served under /phpmyadmin/) ships its own
+// hardened CSP/X-Frame-Options tuned to its assets; imposing the panel's
+// policy there would break it, and emitting a second CSP header would have the
+// browser intersect the two and break it anyway. For that subtree we still set
+// the safe, non-conflicting headers (nosniff, referrer policy) and let
+// phpMyAdmin govern framing/CSP.
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
-		// Self-contained UI: block loading any external resource (limits XSS
-		// blast radius) and framing (clickjacking). Inline style/script are
-		// needed for the meter widths and confirm() handlers.
-		h.Set("Content-Security-Policy",
-			"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "+
-				"script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		if !strings.HasPrefix(r.URL.Path, "/phpmyadmin/") {
+			h.Set("X-Frame-Options", "DENY")
+			// Self-contained UI: block loading any external resource (limits XSS
+			// blast radius) and framing (clickjacking). Inline style/script are
+			// needed for the meter widths and confirm() handlers.
+			h.Set("Content-Security-Policy",
+				"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "+
+					"script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		}
 		next.ServeHTTP(w, r)
 	})
 }

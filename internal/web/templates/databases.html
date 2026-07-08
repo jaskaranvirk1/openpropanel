@@ -1,9 +1,27 @@
 {{define "title"}}Databases · Open ProPanel{{end}}
 
 {{define "content"}}
-<div class="mb-6">
-  <h1 class="text-lg font-semibold text-white">Databases</h1>
-  <p class="text-sm text-slate-400">MariaDB databases and users. Names are prefixed with the owner's account name.</p>
+<div class="mb-6 flex flex-wrap items-start justify-between gap-3">
+  <div>
+    <h1 class="text-lg font-semibold text-white">Databases</h1>
+    <p class="text-sm text-slate-400">MariaDB databases and users. Names are prefixed with the owner's account name.</p>
+  </div>
+  {{/* phpMyAdmin: open when installed; admins can install it in place. */}}
+  {{if .Data.PMAInstalled}}
+    <a href="/phpmyadmin/" target="_blank" rel="noopener"
+       class="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-slate-900/40 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-white/5 transition-colors">
+      <svg class="h-4 w-4 text-indigo-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/></svg>
+      Open phpMyAdmin
+    </a>
+  {{else if .Data.IsAdmin}}
+    <form method="post" action="/phpmyadmin/install"
+          onsubmit="this.querySelector('button').disabled=true;this.querySelector('button').textContent='Installing…';">
+      <button class="inline-flex items-center gap-2 rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-4 py-2 text-sm font-medium text-indigo-200 hover:bg-indigo-500/20 transition-colors">
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v11m0 0 4-4m-4 4-4-4M4.5 19.5h15"/></svg>
+        Install phpMyAdmin
+      </button>
+    </form>
+  {{end}}
 </div>
 
 <div class="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
