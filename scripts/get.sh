@@ -123,17 +123,29 @@ fi
 log "Starting Open ProPanel"
 systemctl daemon-reload
 systemctl enable --now openpropanel
-sleep 1
 
-IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-cat <<DONE
+# Wait for first-run to generate the random admin credentials, then read them.
+CREDS="/var/lib/openpropanel/initial-admin-password.txt"
+for _ in $(seq 1 20); do [ -s "$CREDS" ] && break; sleep 0.5; done
+USERNAME="$(awk -F': ' '/^username:/{print $2}' "$CREDS" 2>/dev/null)"
+PASSWORD="$(awk -F': ' '/^password:/{print $2}' "$CREDS" 2>/dev/null)"
 
-  Open ProPanel $("$BIN_DEST" --version 2>/dev/null | awk '{print $2}') is installed and running.
+LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+PUB_IP="$(curl -fsS --max-time 4 https://api.ipify.org 2>/dev/null || curl -fsS --max-time 4 https://ifconfig.me 2>/dev/null || true)"
+VER="$("$BIN_DEST" --version 2>/dev/null | awk '{print $2}')"
 
-    URL:      https://${IP:-<server-ip>}:${PANEL_PORT}
-    Login:    admin  /  see  journalctl -u openpropanel  (or /var/lib/openpropanel/initial-admin-password.txt)
-
-  It serves HTTPS with a self-signed cert by default; get a trusted one under
-  Settings -> Panel HTTPS. Keep port ${PANEL_PORT} firewalled to trusted IPs.
-
-DONE
+echo
+echo "=================================================================="
+echo " Open ProPanel ${VER} installed successfully!"
+echo "=================================================================="
+[ -n "$PUB_IP" ] && echo " Panel URL (external): https://${PUB_IP}:${PANEL_PORT}"
+[ -n "$LAN_IP" ] && echo " Panel URL (internal): https://${LAN_IP}:${PANEL_PORT}"
+echo " Username:             ${USERNAME:-admin}"
+echo " Password:             ${PASSWORD:-see: journalctl -u openpropanel}"
+echo "=================================================================="
+echo " * HTTPS uses a self-signed cert — accept the browser warning (or get a"
+echo "   trusted one under Settings -> Panel HTTPS)."
+echo " * You can change the username/password after logging in."
+echo " * Keep port ${PANEL_PORT} firewalled to trusted IPs (it runs as root)."
+echo "=================================================================="
+echo

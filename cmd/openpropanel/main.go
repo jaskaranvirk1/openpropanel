@@ -128,23 +128,29 @@ func ensureAdmin(cfg *config.Config, st *store.Store) error {
 	if err != nil {
 		return err
 	}
+	suffix, err := randomHex(3) // random username: admin_<6 hex>
+	if err != nil {
+		return err
+	}
+	username := "admin_" + suffix
 	hash, err := auth.HashPassword(pw)
 	if err != nil {
 		return err
 	}
 	if _, err := st.CreateUser(&store.User{
-		Username:     "admin",
+		Username:     username,
 		PasswordHash: hash,
 		Role:         store.RoleAdmin,
 	}); err != nil {
 		return err
 	}
 
-	pwFile := filepath.Join(cfg.DataDir, "initial-admin-password.txt")
-	_ = os.WriteFile(pwFile, []byte("username: admin\npassword: "+pw+"\n"), 0o600)
+	// Persist the generated credentials (0600) so the installer can print them.
+	credFile := filepath.Join(cfg.DataDir, "initial-admin-password.txt")
+	_ = os.WriteFile(credFile, []byte("username: "+username+"\npassword: "+pw+"\n"), 0o600)
 
 	line := "──────────────────────────────────────────────────────"
-	log.Printf("\n%s\n  Open ProPanel first-run: admin account created\n    username: admin\n    password: %s\n  (also saved to %s)\n  Log in and change it right away.\n%s", line, pw, pwFile, line)
+	log.Printf("\n%s\n  Open ProPanel first-run: admin account created\n    username: %s\n    password: %s\n  (also saved to %s)\n  Log in and change the password right away.\n%s", line, username, pw, credFile, line)
 	return nil
 }
 
