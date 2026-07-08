@@ -85,14 +85,28 @@ fi
 tar -xzf "$TMP/${ASSET}" -C "$TMP"
 [ -f "$TMP/openpropanel" ] || die "archive did not contain the openpropanel binary"
 
-# --- runtime dependencies ----------------------------------------------------
+# --- runtime dependencies (install ONLY what is missing) ---------------------
+# Check each package with rpm first and install only the ones not already
+# present. This avoids aborting when a package is already installed but hidden
+# by an exclude= rule (e.g. PHP provided via the Remi module) and never
+# reinstalls something the server already has.
 if [ -n "$PKG" ]; then
-    log "Installing runtime dependencies"
-    $PKG install -y epel-release >/dev/null 2>&1 || true
-    $PKG install -y httpd mod_ssl php php-fpm certbot firewalld
-    systemctl enable --now php-fpm  >/dev/null 2>&1 || true
-    systemctl enable --now httpd    >/dev/null 2>&1 || true
-    systemctl enable --now firewalld >/dev/null 2>&1 || true
+    missing=""
+    for pkg in httpd mod_ssl php-fpm certbot firewalld; do
+        rpm -q "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
+    done
+    missing="$(echo $missing)" # trim
+    if [ -n "$missing" ]; then
+        log "Installing missing runtime dependencies:$missing"
+        # certbot lives in EPEL; pull that in only if we actually need packages.
+        case " $missing " in *" certbot "*) $PKG install -y epel-release >/dev/null 2>&1 || true ;; esac
+        $PKG install -y $missing || warn "could not install:$missing (install manually if a feature needs it)"
+    else
+        log "All runtime dependencies already present — skipping install"
+    fi
+    for svc in php-fpm httpd firewalld; do
+        systemctl enable --now "$svc" >/dev/null 2>&1 || true
+    done
 fi
 
 # --- install binary + unit ---------------------------------------------------
@@ -101,7 +115,13 @@ install -m 0755 "$TMP/openpropanel" "$BIN_DEST"
 
 if [ -f "$TMP/openpropanel.service" ]; then
     install -m 0644 "$TMP/openpropanel.service" "$UNIT_DEST"
+elif curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/packaging/openpropanel.service" -o "$UNIT_DEST" 2>/dev/null; then
+    # The prebuilt archive didn't include the unit — fetch the hardened one
+    # from the repo rather than falling back to a minimal, unhardened unit.
+    chmod 0644 "$UNIT_DEST"
+    log "Installed hardened systemd unit from the repository"
 else
+    warn "using a minimal systemd unit (could not fetch the hardened one)"
     cat > "$UNIT_DEST" <<UNIT
 [Unit]
 Description=Open ProPanel server control panel

@@ -35,13 +35,23 @@ for candidate in "$REPO_DIR/bin/openpropanel" "$REPO_DIR/openpropanel" "$SCRIPT_
 done
 [ -n "$BIN_SRC" ] || die "built binary not found — run 'make build' first (produces bin/openpropanel)"
 
-log "Installing runtime dependencies via dnf"
-dnf install -y epel-release || warn "epel-release may already be present"
-dnf install -y httpd mod_ssl php php-fpm certbot firewalld
+log "Checking runtime dependencies (installing only what is missing)"
+missing=""
+for pkg in httpd mod_ssl php-fpm certbot firewalld; do
+    rpm -q "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
+done
+missing="$(echo $missing)" # trim
+if [ -n "$missing" ]; then
+    log "Installing missing packages:$missing"
+    case " $missing " in *" certbot "*) dnf install -y epel-release >/dev/null 2>&1 || true ;; esac
+    dnf install -y $missing || warn "could not install:$missing (install manually if a feature needs it)"
+else
+    log "All runtime dependencies already present — skipping install"
+fi
 
-log "Enabling mod_proxy_fcgi + web/PHP services"
-systemctl enable --now php-fpm
-systemctl enable --now httpd
+log "Enabling web/PHP services"
+systemctl enable --now php-fpm   || warn "php-fpm not available"
+systemctl enable --now httpd     || warn "httpd not available"
 systemctl enable --now firewalld || warn "firewalld not available; skipping firewall config"
 
 log "Installing Open ProPanel binary -> $BIN_DEST"
