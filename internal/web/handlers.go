@@ -279,6 +279,9 @@ func (s *Server) postScanSites(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
+	// An explicit re-scan re-discovers everything, including sites previously
+	// forgotten from the panel.
+	_ = s.store.ClearDismissals()
 	n, err := s.domains.ImportExisting(r.Context())
 	if err != nil {
 		redirect(w, r, "/sites", "err", "Scan failed: "+err.Error())

@@ -74,6 +74,11 @@
       </div>
       <div class="flex items-center gap-1.5">
         <a href="/files?site={{.Site.ID}}" class="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/5">Files</a>
+        {{if eq .Site.Source "imported"}}
+        <form method="post" action="/sites/{{.Site.ID}}/delete" onsubmit="return confirm('Forget {{.Site.Domain}} from the panel? Its existing config and files are left completely untouched.')">
+          <button class="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/5">Forget</button>
+        </form>
+        {{else}}
         {{if .Site.SSLEnabled}}
         <form method="post" action="/sites/{{.Site.ID}}/ssl">
           <input type="hidden" name="enable" value="0">
@@ -88,6 +93,7 @@
         <form method="post" action="/sites/{{.Site.ID}}/delete" onsubmit="return confirm('Delete {{.Site.Domain}} and its subdomains? Files on disk are kept.')">
           <button class="rounded-lg border border-rose-500/20 px-3 py-1.5 text-xs text-rose-300 hover:bg-rose-500/10">Delete</button>
         </form>
+        {{end}}
       </div>
     </div>
 

@@ -153,6 +153,11 @@ CREATE TABLE IF NOT EXISTS db_grants (
     UNIQUE(database_id, db_user_id)
 );
 
+CREATE TABLE IF NOT EXISTS dismissed_imports (
+    domain     TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sites_user ON sites(user_id);
 CREATE INDEX IF NOT EXISTS idx_sites_parent ON sites(parent_id);
 CREATE INDEX IF NOT EXISTS idx_databases_user ON databases(user_id);
@@ -402,6 +407,38 @@ func (s *Store) MarkSiteManaged(id int64, phpVersion string) error {
 // DeleteSite removes a site (and its subdomains via cascade).
 func (s *Store) DeleteSite(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM sites WHERE id = ?`, id)
+	return err
+}
+
+// DismissImport records that an imported site was removed from the panel, so
+// startup discovery does not resurrect it while its on-disk config still exists.
+func (s *Store) DismissImport(domain string) error {
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO dismissed_imports (domain, created_at) VALUES (?, ?)`,
+		domain, time.Now().Unix())
+	return err
+}
+
+// DismissedImports returns the set of dismissed import domains.
+func (s *Store) DismissedImports() (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT domain FROM dismissed_imports`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			return nil, err
+		}
+		out[d] = true
+	}
+	return out, rows.Err()
+}
+
+// ClearDismissals forgets all dismissals (used by an explicit re-scan).
+func (s *Store) ClearDismissals() error {
+	_, err := s.db.Exec(`DELETE FROM dismissed_imports`)
 	return err
 }
 

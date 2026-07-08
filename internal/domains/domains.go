@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	osuser "os/user"
 	"path/filepath"
@@ -66,6 +67,29 @@ var domainRe = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0
 
 // labelRe validates a single subdomain label (no dots).
 var labelRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// errImportedReadOnly is returned when a config-mutating action is attempted on
+// an imported (never-adopted) site. Such sites are read-only until adopted, so
+// the panel never overwrites a config it did not create.
+var errImportedReadOnly = errors.New("this site was imported from an existing config — adopt it first to manage it here")
+
+// validImportDomain rejects discovered names that are not real, safe hostnames
+// (bare IPs, wildcards, etc.) before they are recorded or used in file paths.
+func validImportDomain(d string) bool {
+	return domainRe.MatchString(d) && net.ParseIP(d) == nil
+}
+
+func distinctDomains(sites []vhostscan.Site) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range sites {
+		if !seen[s.Domain] {
+			seen[s.Domain] = true
+			out = append(out, s.Domain)
+		}
+	}
+	return out
+}
 
 // NormalizeDomain lower-cases and trims a domain and validates it.
 func NormalizeDomain(d string) (string, error) {
@@ -149,6 +173,9 @@ func (s *Service) AddSubdomain(ctx context.Context, parentID int64, label string
 	parent, err := s.store.SiteByID(parentID)
 	if err != nil {
 		return nil, errors.New("parent site not found")
+	}
+	if parent.Source != store.SourceManaged {
+		return nil, errImportedReadOnly
 	}
 	domain := label + "." + parent.Domain
 	if _, err := s.store.SiteByDomain(domain); err == nil {
@@ -235,11 +262,18 @@ func (s *Service) DeleteAccount(ctx context.Context, userID int64) error {
 	return nil
 }
 
-// DeleteSite tears down a site and all of its subdomains.
+// DeleteSite tears down a managed site and all of its subdomains. An imported
+// (never-adopted) site is only forgotten from the panel — its original config
+// and files are left untouched — and a dismissal is recorded so startup
+// discovery does not resurrect it.
 func (s *Service) DeleteSite(ctx context.Context, id int64) error {
 	site, err := s.store.SiteByID(id)
 	if err != nil {
 		return err
+	}
+	if site.Source != store.SourceManaged {
+		_ = s.store.DismissImport(site.Domain)
+		return s.store.DeleteSite(id)
 	}
 	// Remove subdomains' server-side artefacts first (DB rows cascade). If we
 	// cannot enumerate them, abort rather than leaving orphaned live vhosts.
@@ -265,6 +299,9 @@ func (s *Service) EnableSSL(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
+	if site.Source != store.SourceManaged {
+		return errImportedReadOnly
+	}
 	var alts []string
 	if site.Type == store.SiteMain {
 		alts = append(alts, "www."+site.Domain)
@@ -288,6 +325,9 @@ func (s *Service) DisableSSL(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
+	if site.Source != store.SourceManaged {
+		return errImportedReadOnly
+	}
 	site.SSLEnabled = false
 	if err := s.renderVHost(site); err != nil {
 		return err
@@ -303,6 +343,9 @@ func (s *Service) ChangePHP(ctx context.Context, id int64, phpLabel string) erro
 	site, err := s.store.SiteByID(id)
 	if err != nil {
 		return err
+	}
+	if site.Source != store.SourceManaged {
+		return errImportedReadOnly
 	}
 	version, err := s.resolveVersion(phpLabel)
 	if err != nil {
@@ -381,6 +424,9 @@ func (s *Service) RegenerateAll(ctx context.Context) error {
 		return err
 	}
 	for _, site := range sites {
+		if site.Source != store.SourceManaged {
+			continue // imported sites are read-only until adopted
+		}
 		if err := s.reprovisionSite(ctx, site); err != nil {
 			return err
 		}
@@ -429,9 +475,13 @@ func (s *Service) SwitchWebServer(ctx context.Context, target string) error {
 		return err
 	}
 
-	// 1. Write the new server's site configs. This touches neither the running
-	//    old server nor any php-fpm socket, so the old server keeps serving.
+	// 1. Write the new server's site configs (managed sites only — imported
+	//    ones are never rewritten). This touches neither the running old server
+	//    nor any php-fpm socket, so the old server keeps serving.
 	for _, site := range sites {
+		if site.Source != store.SourceManaged {
+			continue
+		}
 		if err := s.renderVHost(site); err != nil {
 			s.cfg.WebServer = oldTarget
 			return err
@@ -464,12 +514,19 @@ func (s *Service) SwitchWebServer(ctx context.Context, target string) error {
 	//    PHP blip during this manual cutover is expected.)
 	var reErr error
 	for _, site := range sites {
+		if site.Source != store.SourceManaged {
+			continue
+		}
 		if err := s.reprovisionPHP(ctx, site); err != nil {
 			reErr = err
 		}
 	}
-	// 6. Remove the now-inactive server's stale per-site configs.
+	// 6. Remove the now-inactive server's stale per-site configs (managed only —
+	//    never delete a config the panel did not create).
 	for _, site := range sites {
+		if site.Source != store.SourceManaged {
+			continue
+		}
 		_ = s.managerFor(oldTarget).Remove(site.Domain)
 	}
 	if err := s.web().Reload(ctx); err != nil {
@@ -503,10 +560,17 @@ func (s *Service) ImportExisting(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	dismissed, _ := s.store.DismissedImports()
 	n := 0
 	for _, d := range found {
 		if d.Managed {
 			continue // a config we generated ourselves
+		}
+		if !validImportDomain(d.Domain) {
+			continue // not a real/safe hostname (bare IP, wildcard, ...)
+		}
+		if dismissed[d.Domain] {
+			continue // operator previously removed it from the panel
 		}
 		if _, err := s.store.SiteByDomain(d.Domain); err == nil {
 			continue // already tracked
@@ -533,6 +597,11 @@ func (s *Service) ImportExisting(ctx context.Context) (int, error) {
 // backup), validates, and reloads. On any validation failure it rolls back so
 // the previously-running config is restored untouched.
 func (s *Service) AdoptSite(ctx context.Context, id int64, phpLabel string) error {
+	// Serialize against web-server switches, bulk regeneration and other adopts,
+	// which share the same config paths and cfg.WebServer.
+	s.switchMu.Lock()
+	defer s.switchMu.Unlock()
+
 	site, err := s.store.SiteByID(id)
 	if err != nil {
 		return err
@@ -545,13 +614,60 @@ func (s *Service) AdoptSite(ctx context.Context, id int64, phpLabel string) erro
 		return err
 	}
 
+	nginx := s.cfg.UseNginx()
+	vhostDir := s.cfg.ApacheVhostDir
+	if nginx {
+		vhostDir = s.cfg.NginxVhostDir
+	}
 	orig := site.ConfFile
 	target := s.web().ConfPath(site.Domain)
-	disabled := ""
+
+	// Refuse to adopt when the original config is shared, so we never take down
+	// or duplicate co-located sites.
 	if orig != "" {
-		disabled = orig + ".disabled-by-openpropanel"
-		if err := os.Rename(orig, disabled); err != nil {
-			disabled = "" // original already gone; nothing to restore
+		if len(distinctDomains(vhostscan.ParseFile(orig, nginx))) > 1 {
+			return fmt.Errorf("%s shares its config file with other sites — split them into separate files before adopting", site.Domain)
+		}
+		if len(vhostscan.FilesForDomain(vhostDir, nginx, site.Domain)) > 1 {
+			return fmt.Errorf("%s is defined across multiple config files — consolidate them before adopting", site.Domain)
+		}
+	}
+
+	disabled, targetBackup, wrote := "", "", false
+	restore := func() {
+		if wrote {
+			_ = os.Remove(target)
+		}
+		if targetBackup != "" {
+			_ = os.Rename(targetBackup, target)
+		}
+		if disabled != "" {
+			_ = os.Rename(disabled, orig)
+		}
+		_ = s.php.RemoveSite(ctx, site.Domain)
+		_ = s.web().Reload(ctx)
+	}
+
+	// Disable (and thereby back up) the original. If it still exists the rename
+	// MUST succeed, or we cannot safely proceed.
+	if orig != "" {
+		if _, serr := os.Stat(orig); serr == nil {
+			disabled = orig + ".disabled-by-openpropanel"
+			if rerr := os.Rename(orig, disabled); rerr != nil {
+				disabled = ""
+				return fmt.Errorf("could not back up the original config %s: %w", orig, rerr)
+			}
+		}
+	}
+	// Back up any UNRELATED file already occupying our target path.
+	if target != orig {
+		if _, serr := os.Stat(target); serr == nil {
+			bak := target + ".pre-openpropanel.bak"
+			if rerr := os.Rename(target, bak); rerr != nil {
+				restore()
+				return fmt.Errorf("could not back up existing file at %s: %w", target, rerr)
+			}
+			targetBackup = bak
 		}
 	}
 
@@ -560,33 +676,23 @@ func (s *Service) AdoptSite(ctx context.Context, id int64, phpLabel string) erro
 	// Imported sites have no dedicated system user, so the pool runs as the
 	// web-server user (empty systemUser).
 	if err := s.php.ConfigureSite(ctx, site, version, ""); err != nil {
-		restoreAdopt(orig, disabled, target)
+		restore()
 		return fmt.Errorf("php-fpm: %w", err)
 	}
 	if err := s.renderVHost(site); err != nil {
-		_ = s.php.RemoveSite(ctx, site.Domain)
-		restoreAdopt(orig, disabled, target)
+		restore()
 		return err
 	}
+	wrote = true
 	if _, err := s.web().Validate(ctx); err != nil {
-		_ = s.php.RemoveSite(ctx, site.Domain)
-		restoreAdopt(orig, disabled, target)
-		_ = s.web().Reload(ctx)
+		restore()
 		return fmt.Errorf("generated config was invalid, reverted to the original: %w", err)
 	}
-	if err := s.web().Apply(ctx); err != nil {
+	if err := s.web().Reload(ctx); err != nil {
+		restore()
 		return err
 	}
 	return s.store.MarkSiteManaged(id, version.Label)
-}
-
-// restoreAdopt undoes a failed adoption: remove our generated vhost and restore
-// the original (disabled) config.
-func restoreAdopt(orig, disabled, target string) {
-	_ = os.Remove(target)
-	if disabled != "" && orig != "" {
-		_ = os.Rename(disabled, orig)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -611,6 +717,9 @@ func (s *Service) renderVHost(site *store.Site) error {
 }
 
 func (s *Service) teardownArtifacts(ctx context.Context, site *store.Site) {
+	if site.Source != store.SourceManaged {
+		return // never remove a config/pool the panel did not create
+	}
 	_ = s.web().Remove(site.Domain)
 	_ = s.php.RemoveSite(ctx, site.Domain)
 	// Document root is deliberately left in place so user data is never

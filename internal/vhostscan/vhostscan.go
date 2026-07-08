@@ -92,6 +92,41 @@ func scan(dir string, parse func(content, file string) []Site) ([]Site, error) {
 	return out, nil
 }
 
+// ParseFile parses a single config file and returns its vhosts, unmerged (one
+// entry per block). Used to detect files that define more than one site.
+func ParseFile(path string, nginx bool) []Site {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	if nginx {
+		return parseNginx(string(b), path)
+	}
+	return parseApache(string(b), path)
+}
+
+// FilesForDomain returns the *.conf files in dir that define the given domain.
+func FilesForDomain(dir string, nginx bool, domain string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".conf") {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		for _, s := range ParseFile(p, nginx) {
+			if s.Domain == domain {
+				files = append(files, p)
+				break
+			}
+		}
+	}
+	return files
+}
+
 func parseApache(content, file string) []Site {
 	var sites []Site
 	for _, m := range apacheBlockRe.FindAllStringSubmatch(content, -1) {
