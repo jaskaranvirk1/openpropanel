@@ -1,9 +1,16 @@
 {{define "title"}}Domains · Open ProPanel{{end}}
 
 {{define "content"}}
-<div class="mb-6">
-  <h1 class="text-lg font-semibold text-white">Domains</h1>
-  <p class="text-sm text-slate-400">Add domains, switch PHP versions, enable SSL and manage subdomains.</p>
+<div class="mb-6 flex flex-wrap items-start justify-between gap-3">
+  <div>
+    <h1 class="text-lg font-semibold text-white">Domains</h1>
+    <p class="text-sm text-slate-400">Add domains, switch PHP versions, enable SSL and manage subdomains.</p>
+  </div>
+  {{if $.Data.IsAdmin}}
+  <form method="post" action="/sites/scan">
+    <button class="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-300 hover:bg-white/5">Scan for existing sites</button>
+  </form>
+  {{end}}
 </div>
 
 {{/* Add-domain card */}}
@@ -54,7 +61,8 @@
         <a href="http{{if .Site.SSLEnabled}}s{{end}}://{{.Site.Domain}}" target="_blank" rel="noopener"
            class="text-base font-medium text-white hover:text-indigo-300">{{.Site.Domain}}</a>
         <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
-          <span>PHP {{.Site.PHPVersion}}</span>
+          {{if eq .Site.Source "imported"}}<span class="rounded-full bg-amber-500/10 px-2 py-0.5 font-medium text-amber-300 ring-1 ring-inset ring-amber-500/20">imported</span>{{end}}
+          {{if .Site.PHPVersion}}<span>PHP {{.Site.PHPVersion}}</span>{{end}}
           {{if .Site.SSLEnabled}}
           <span class="inline-flex items-center gap-1 text-emerald-400"><span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>SSL</span>
           {{else}}
@@ -85,6 +93,19 @@
 
     {{/* controls */}}
     <div class="flex flex-wrap items-end gap-6 px-5 py-4">
+      {{if eq .Site.Source "imported"}}
+      <form method="post" action="/sites/{{.Site.ID}}/adopt" class="flex items-end gap-2"
+            onsubmit="return confirm('Adopt {{.Site.Domain}}? Open ProPanel will generate a managed vhost + PHP-FPM pool for it. The original config is backed up (renamed *.disabled-by-openpropanel). You can then switch PHP, add subdomains, etc.')">
+        <div>
+          <label class="mb-1.5 block text-xs font-medium text-slate-400">Adopt with PHP</label>
+          <select name="php_version" class="rounded-lg border border-white/10 bg-slate-950/60 px-3 py-1.5 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none">
+            {{range $.Data.PHPVersions}}<option value="{{.Label}}">PHP {{.Label}}</option>{{end}}
+          </select>
+        </div>
+        <button class="rounded-lg bg-emerald-500 px-3 py-1.5 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 hover:bg-emerald-400 transition-colors">Adopt &amp; manage</button>
+      </form>
+      <p class="self-center text-xs text-slate-500">Imported from an existing config — Files &amp; SSL work now; adopt to manage PHP &amp; subdomains.</p>
+      {{else}}
       {{$cur := .Site.PHPVersion}}
       <form method="post" action="/sites/{{.Site.ID}}/php" class="flex items-end gap-2">
         <div>
@@ -107,6 +128,7 @@
         </div>
         <button class="rounded-lg border border-white/10 px-3 py-1.5 text-sm text-slate-300 hover:bg-white/5">Add</button>
       </form>
+      {{end}}
     </div>
 
     {{/* subdomains */}}

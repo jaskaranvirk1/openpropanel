@@ -68,6 +68,8 @@ func (s *Server) Handler() http.Handler {
 	app.HandleFunc("POST /sites/{id}/php", s.postChangePHP)
 	app.HandleFunc("POST /sites/{id}/ssl", s.postToggleSSL)
 	app.HandleFunc("POST /sites/{id}/subdomains", s.postAddSubdomain)
+	app.HandleFunc("POST /sites/scan", s.postScanSites)
+	app.HandleFunc("POST /sites/{id}/adopt", s.postAdoptSite)
 
 	app.HandleFunc("GET /databases", s.getDatabases)
 	app.HandleFunc("POST /databases", s.postCreateDatabase)

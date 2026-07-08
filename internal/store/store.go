@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver
@@ -43,7 +44,13 @@ type User struct {
 	CreatedAt    time.Time
 }
 
-// Site is a domain or subdomain served by Apache.
+// Site sources.
+const (
+	SourceManaged  = "managed"  // vhost generated & owned by Open ProPanel
+	SourceImported = "imported" // discovered from a pre-existing config
+)
+
+// Site is a domain or subdomain served by the active web server.
 type Site struct {
 	ID         int64
 	UserID     int64
@@ -53,6 +60,8 @@ type Site struct {
 	DocRoot    string
 	PHPVersion string
 	SSLEnabled bool
+	Source     string // SourceManaged | SourceImported
+	ConfFile   string // original config path (for imported sites)
 	CreatedAt  time.Time
 }
 
@@ -112,6 +121,8 @@ CREATE TABLE IF NOT EXISTS sites (
     doc_root    TEXT NOT NULL,
     php_version TEXT NOT NULL DEFAULT '',
     ssl_enabled INTEGER NOT NULL DEFAULT 0,
+    source      TEXT NOT NULL DEFAULT 'managed',
+    conf_file   TEXT NOT NULL DEFAULT '',
     created_at  INTEGER NOT NULL
 );
 
@@ -147,8 +158,20 @@ CREATE INDEX IF NOT EXISTS idx_sites_parent ON sites(parent_id);
 CREATE INDEX IF NOT EXISTS idx_databases_user ON databases(user_id);
 CREATE INDEX IF NOT EXISTS idx_dbusers_user ON db_users(user_id);
 `
-	_, err := s.db.Exec(schema)
-	return err
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+	// Upgrade older databases: add columns that newer versions expect. SQLite
+	// errors on a duplicate column, which we tolerate (already migrated).
+	for _, alter := range []string{
+		`ALTER TABLE sites ADD COLUMN source TEXT NOT NULL DEFAULT 'managed'`,
+		`ALTER TABLE sites ADD COLUMN conf_file TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := s.db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +183,13 @@ func (s *Store) CountUsers() (int, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n)
 	return n, err
+}
+
+// FirstAdmin returns the earliest-created admin account (used as the default
+// owner for imported sites).
+func (s *Store) FirstAdmin() (*User, error) {
+	row := s.db.QueryRow(`SELECT `+userCols+` FROM users WHERE role = ? ORDER BY created_at ASC, id ASC LIMIT 1`, RoleAdmin)
+	return scanUser(row)
 }
 
 // CreateUser inserts a new account and returns it with its assigned ID.
@@ -252,13 +282,13 @@ func (s *Store) CountBySystemUser(name string) (int, error) {
 // Sites
 // ---------------------------------------------------------------------------
 
-const siteCols = `id, user_id, domain, type, parent_id, doc_root, php_version, ssl_enabled, created_at`
+const siteCols = `id, user_id, domain, type, parent_id, doc_root, php_version, ssl_enabled, source, conf_file, created_at`
 
 func scanSite(row interface{ Scan(...any) error }) (*Site, error) {
 	var st Site
 	var created int64
 	var ssl int
-	err := row.Scan(&st.ID, &st.UserID, &st.Domain, &st.Type, &st.ParentID, &st.DocRoot, &st.PHPVersion, &ssl, &created)
+	err := row.Scan(&st.ID, &st.UserID, &st.Domain, &st.Type, &st.ParentID, &st.DocRoot, &st.PHPVersion, &ssl, &st.Source, &st.ConfFile, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -277,10 +307,13 @@ func (s *Store) CreateSite(st *Site) (*Site, error) {
 	if st.SSLEnabled {
 		ssl = 1
 	}
+	if st.Source == "" {
+		st.Source = SourceManaged
+	}
 	res, err := s.db.Exec(
-		`INSERT INTO sites (user_id, domain, type, parent_id, doc_root, php_version, ssl_enabled, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		st.UserID, st.Domain, st.Type, st.ParentID, st.DocRoot, st.PHPVersion, ssl, now.Unix(),
+		`INSERT INTO sites (user_id, domain, type, parent_id, doc_root, php_version, ssl_enabled, source, conf_file, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		st.UserID, st.Domain, st.Type, st.ParentID, st.DocRoot, st.PHPVersion, ssl, st.Source, st.ConfFile, now.Unix(),
 	)
 	if err != nil {
 		return nil, err
@@ -354,6 +387,15 @@ func (s *Store) SetSiteSSL(id int64, enabled bool) error {
 		v = 1
 	}
 	_, err := s.db.Exec(`UPDATE sites SET ssl_enabled = ? WHERE id = ?`, v, id)
+	return err
+}
+
+// MarkSiteManaged flips an imported site to fully-managed after adoption,
+// recording the PHP version and clearing the original config-file reference.
+func (s *Store) MarkSiteManaged(id int64, phpVersion string) error {
+	_, err := s.db.Exec(
+		`UPDATE sites SET source = ?, php_version = ?, conf_file = '' WHERE id = ?`,
+		SourceManaged, phpVersion, id)
 	return err
 }
 

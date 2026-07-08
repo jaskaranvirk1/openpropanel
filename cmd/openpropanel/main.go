@@ -100,6 +100,14 @@ func run() error {
 	mariadbMgr := mariadb.New(cfg)
 	domainSvc := domains.New(cfg, *cfgPath, st, apacheMgr, nginxMgr, phpMgr, sslMgr, sysuserMgr)
 
+	// Adopt any vhosts already configured on the host so they show up in the
+	// panel immediately (imported, read-only until explicitly adopted).
+	if n, ierr := domainSvc.ImportExisting(context.Background()); ierr != nil {
+		log.Printf("scan for existing sites: %v", ierr)
+	} else if n > 0 {
+		log.Printf("imported %d existing site(s) already configured on this host", n)
+	}
+
 	srv, err := web.New(cfg, st, authMgr, domainSvc, phpMgr, sysuserMgr, mariadbMgr, *cfgPath)
 	if err != nil {
 		return fmt.Errorf("init web server: %w", err)

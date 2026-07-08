@@ -272,6 +272,38 @@ func (s *Server) postAddSubdomain(w http.ResponseWriter, r *http.Request) {
 	redirect(w, r, "/sites", "msg", "Subdomain "+label+"."+site.Domain+" created")
 }
 
+// postScanSites re-scans the host for pre-existing vhosts and imports new ones.
+func (s *Server) postScanSites(w http.ResponseWriter, r *http.Request) {
+	u := auth.UserFrom(r.Context())
+	if u == nil || u.Role != store.RoleAdmin {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	n, err := s.domains.ImportExisting(r.Context())
+	if err != nil {
+		redirect(w, r, "/sites", "err", "Scan failed: "+err.Error())
+		return
+	}
+	msg := "No new sites found"
+	if n > 0 {
+		msg = "Imported " + strconv.Itoa(n) + " existing site(s)"
+	}
+	redirect(w, r, "/sites", "msg", msg)
+}
+
+// postAdoptSite converts an imported site to fully managed.
+func (s *Server) postAdoptSite(w http.ResponseWriter, r *http.Request) {
+	site, ok := s.authorizeSite(w, r)
+	if !ok {
+		return
+	}
+	if err := s.domains.AdoptSite(r.Context(), site.ID, r.FormValue("php_version")); err != nil {
+		redirect(w, r, "/sites", "err", err.Error())
+		return
+	}
+	redirect(w, r, "/sites", "msg", site.Domain+" adopted — now fully managed")
+}
+
 // authorizeSite loads the site named by {id} and checks the current user may
 // manage it (owner or admin). It writes the error response itself on failure.
 func (s *Server) authorizeSite(w http.ResponseWriter, r *http.Request) (*store.Site, bool) {

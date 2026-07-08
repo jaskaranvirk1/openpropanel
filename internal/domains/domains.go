@@ -23,6 +23,7 @@ import (
 	"github.com/openpropanel/openpropanel/internal/store"
 	"github.com/openpropanel/openpropanel/internal/sysuser"
 	"github.com/openpropanel/openpropanel/internal/system"
+	"github.com/openpropanel/openpropanel/internal/vhostscan"
 	"github.com/openpropanel/openpropanel/internal/webserver"
 )
 
@@ -478,6 +479,114 @@ func (s *Service) SwitchWebServer(ctx context.Context, target string) error {
 		return fmt.Errorf("switched to %s but some php-fpm pools failed to reprovision: %w", target, reErr)
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Import / adopt existing (pre-existing, non-managed) sites
+// ---------------------------------------------------------------------------
+
+// ImportExisting discovers virtual hosts already present on the host that Open
+// ProPanel did not create, and registers new ones as "imported" sites owned by
+// the first admin. It never edits the discovered configs. Returns the count of
+// newly imported sites.
+func (s *Service) ImportExisting(ctx context.Context) (int, error) {
+	admin, err := s.store.FirstAdmin()
+	if err != nil {
+		return 0, err
+	}
+	var found []vhostscan.Site
+	if s.cfg.UseNginx() {
+		found, err = vhostscan.Nginx(s.cfg.NginxVhostDir)
+	} else {
+		found, err = vhostscan.Apache(s.cfg.ApacheVhostDir)
+	}
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, d := range found {
+		if d.Managed {
+			continue // a config we generated ourselves
+		}
+		if _, err := s.store.SiteByDomain(d.Domain); err == nil {
+			continue // already tracked
+		}
+		if _, err := s.store.CreateSite(&store.Site{
+			UserID:     admin.ID,
+			Domain:     d.Domain,
+			Type:       store.SiteMain,
+			DocRoot:    d.DocRoot,
+			SSLEnabled: d.SSL,
+			Source:     store.SourceImported,
+			ConfFile:   d.File,
+		}); err != nil {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
+// AdoptSite converts an imported site to fully-managed. It generates an Open
+// ProPanel vhost + php-fpm pool pointing at the SAME document root, disables the
+// original config (renamed to *.disabled-by-openpropanel, which doubles as a
+// backup), validates, and reloads. On any validation failure it rolls back so
+// the previously-running config is restored untouched.
+func (s *Service) AdoptSite(ctx context.Context, id int64, phpLabel string) error {
+	site, err := s.store.SiteByID(id)
+	if err != nil {
+		return err
+	}
+	if site.Source != store.SourceImported {
+		return errors.New("site is already managed")
+	}
+	version, err := s.resolveVersion(phpLabel)
+	if err != nil {
+		return err
+	}
+
+	orig := site.ConfFile
+	target := s.web().ConfPath(site.Domain)
+	disabled := ""
+	if orig != "" {
+		disabled = orig + ".disabled-by-openpropanel"
+		if err := os.Rename(orig, disabled); err != nil {
+			disabled = "" // original already gone; nothing to restore
+		}
+	}
+
+	site.Source = store.SourceManaged
+	site.PHPVersion = version.Label
+	// Imported sites have no dedicated system user, so the pool runs as the
+	// web-server user (empty systemUser).
+	if err := s.php.ConfigureSite(ctx, site, version, ""); err != nil {
+		restoreAdopt(orig, disabled, target)
+		return fmt.Errorf("php-fpm: %w", err)
+	}
+	if err := s.renderVHost(site); err != nil {
+		_ = s.php.RemoveSite(ctx, site.Domain)
+		restoreAdopt(orig, disabled, target)
+		return err
+	}
+	if _, err := s.web().Validate(ctx); err != nil {
+		_ = s.php.RemoveSite(ctx, site.Domain)
+		restoreAdopt(orig, disabled, target)
+		_ = s.web().Reload(ctx)
+		return fmt.Errorf("generated config was invalid, reverted to the original: %w", err)
+	}
+	if err := s.web().Apply(ctx); err != nil {
+		return err
+	}
+	return s.store.MarkSiteManaged(id, version.Label)
+}
+
+// restoreAdopt undoes a failed adoption: remove our generated vhost and restore
+// the original (disabled) config.
+func restoreAdopt(orig, disabled, target string) {
+	_ = os.Remove(target)
+	if disabled != "" && orig != "" {
+		_ = os.Rename(disabled, orig)
+	}
 }
 
 // ---------------------------------------------------------------------------
