@@ -3,11 +3,19 @@
 // authenticates over the unix socket (no password needed), and pipes the SQL
 // via stdin so no secret ever appears in the process argument list.
 //
+// NOTE: the panel currently talks to MariaDB as OS root (unix_socket => MariaDB
+// root). De-privileging this to a dedicated least-privilege account is tracked
+// as a follow-up: a partial-REVOKE of GRANT ALL is NOT sufficient (a global-DML
+// account can rewrite the grant tables, and on MariaDB 10.5+ the SUPER split
+// leaves SET USER), so it needs a positive least-privilege grant model with no
+// privilege on the mysql schema — and validation against a live MariaDB.
+//
 // SECURITY: database and user *names* are validated by callers (the web layer)
-// to a strict [a-z0-9_-] charset, so — combined with backtick/quote wrapping —
-// they cannot break out of their SQL context. The only free-form input is a
-// user-chosen password, which is always emitted as an escaped single-quoted
-// string literal via escapeLiteral.
+// to a strict [a-z0-9_-] charset, so — combined with backtick/quote wrapping
+// and escapeGrantDB for the LIKE-matched GRANT position — they cannot break out
+// of their SQL context. The only free-form input is a user-chosen password,
+// always emitted as an escaped single-quoted literal via escapeLiteral. Every
+// mutating operation is recorded (secret-free) in the system audit log.
 package mariadb
 
 import (
@@ -49,42 +57,58 @@ func (m *Manager) exec(ctx context.Context, sql string) error {
 // CreateDatabase creates a utf8mb4 database. It fails if one already exists so
 // callers never mistake a silent no-op for a fresh creation.
 func (m *Manager) CreateDatabase(ctx context.Context, name string) error {
+	system.Audit("mariadb", "CREATE DATABASE "+name)
 	return m.exec(ctx, fmt.Sprintf(
 		"CREATE DATABASE `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;", name))
 }
 
 // DropDatabase removes a database if present.
 func (m *Manager) DropDatabase(ctx context.Context, name string) error {
+	system.Audit("mariadb", "DROP DATABASE "+name)
 	return m.exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`;", name))
 }
 
 // CreateUser creates a localhost user with the given password.
 func (m *Manager) CreateUser(ctx context.Context, name, password string) error {
+	system.Audit("mariadb", "CREATE USER "+name)
 	return m.exec(ctx, fmt.Sprintf(
 		"CREATE USER '%s'@'localhost' IDENTIFIED BY '%s';", name, escapeLiteral(password)))
 }
 
 // SetPassword resets a user's password.
 func (m *Manager) SetPassword(ctx context.Context, name, password string) error {
+	system.Audit("mariadb", "SET PASSWORD "+name)
 	return m.exec(ctx, fmt.Sprintf(
 		"ALTER USER '%s'@'localhost' IDENTIFIED BY '%s';", name, escapeLiteral(password)))
 }
 
 // DropUser removes a user if present.
 func (m *Manager) DropUser(ctx context.Context, name string) error {
+	system.Audit("mariadb", "DROP USER "+name)
 	return m.exec(ctx, fmt.Sprintf("DROP USER IF EXISTS '%s'@'localhost';", name))
 }
 
 // Grant gives a user ALL PRIVILEGES on a database.
 func (m *Manager) Grant(ctx context.Context, dbName, userName string) error {
+	system.Audit("mariadb", "GRANT "+dbName+" -> "+userName)
 	return m.exec(ctx, fmt.Sprintf(
 		"GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'localhost'; FLUSH PRIVILEGES;", escapeGrantDB(dbName), userName))
 }
 
 // Revoke removes a user's privileges on a database.
 func (m *Manager) Revoke(ctx context.Context, dbName, userName string) error {
+	system.Audit("mariadb", "REVOKE "+dbName+" -> "+userName)
 	return m.exec(ctx, fmt.Sprintf(
 		"REVOKE ALL PRIVILEGES ON `%s`.* FROM '%s'@'localhost'; FLUSH PRIVILEGES;", escapeGrantDB(dbName), userName))
+}
+
+// escapeLiteral makes a string safe inside a single-quoted SQL string literal
+// by doubling embedded single quotes. Combined with the NO_BACKSLASH_ESCAPES
+// session mode set in sessionPrologue, this is correct under both default and
+// ANSI-compatible server configurations and preserves the value exactly (no
+// backslash rewriting), so passwords are stored verbatim.
+func escapeLiteral(s string) string {
+	return strings.ReplaceAll(s, `'`, `''`)
 }
 
 // escapeGrantDB escapes the LIKE wildcards ('_' and '%') in a database name for
@@ -104,13 +128,4 @@ func escapeGrantDB(name string) string {
 	name = strings.ReplaceAll(name, "_", `\_`)
 	name = strings.ReplaceAll(name, "%", `\%`)
 	return name
-}
-
-// escapeLiteral makes a string safe inside a single-quoted SQL string literal
-// by doubling embedded single quotes. Combined with the NO_BACKSLASH_ESCAPES
-// session mode set in sessionPrologue, this is correct under both default and
-// ANSI-compatible server configurations and preserves the value exactly (no
-// backslash rewriting), so passwords are stored verbatim.
-func escapeLiteral(s string) string {
-	return strings.ReplaceAll(s, `'`, `''`)
 }

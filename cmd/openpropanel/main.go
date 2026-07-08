@@ -27,6 +27,7 @@ import (
 	"github.com/openpropanel/openpropanel/internal/ssl"
 	"github.com/openpropanel/openpropanel/internal/store"
 	"github.com/openpropanel/openpropanel/internal/sysuser"
+	"github.com/openpropanel/openpropanel/internal/system"
 	"github.com/openpropanel/openpropanel/internal/web"
 )
 
@@ -76,6 +77,13 @@ func run() error {
 	}
 	if err := cfg.EnsureDirs(); err != nil {
 		return fmt.Errorf("prepare directories: %w", err)
+	}
+	if err := checkSecurePerms(*cfgPath, cfg.DataDir); err != nil {
+		return err
+	}
+	// Append-only audit trail of every privileged action (best-effort).
+	if err := system.EnableAudit(filepath.Join(cfg.DataDir, "audit.log")); err != nil {
+		log.Printf("audit log disabled: %v", err)
 	}
 
 	st, err := store.Open(cfg.DBPath())
@@ -161,6 +169,36 @@ func ensureAdmin(cfg *config.Config, st *store.Store) error {
 
 	line := "──────────────────────────────────────────────────────"
 	log.Printf("\n%s\n  Open ProPanel first-run: admin account created\n    username: %s\n    password: %s\n  (also saved to %s)\n  Log in and change the password right away.\n%s", line, username, pw, credFile, line)
+	return nil
+}
+
+// checkSecurePerms refuses to start if the config file or data directory is
+// group- or world-writable: a writable config/state dir would let a local
+// non-root user tamper with what the root panel reads and executes. Enforced on
+// Linux only — Windows/dev file modes do not carry meaningful POSIX bits.
+func checkSecurePerms(cfgPath, dataDir string) error {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	// The config file and data dir hold secrets (session key, the SQLite user
+	// store, the first-run admin password, the audit log), so they must not be
+	// group/world *accessible* at all — reject any of those bits, not just write.
+	for _, p := range []string{cfgPath, dataDir} {
+		fi, err := os.Stat(p)
+		if err != nil {
+			continue // absent config falls back to defaults; dir was just created
+		}
+		if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+			return fmt.Errorf("refusing to start: %s is group/world accessible (%#o) — chmod it to 0700 (dir) / 0600 (config)", p, perm)
+		}
+	}
+	// A group/world-writable *parent* of the config would let a local user swap
+	// the file out from under the 0600 check, so reject that too.
+	if dir := filepath.Dir(cfgPath); dir != "" {
+		if fi, err := os.Stat(dir); err == nil && fi.Mode().Perm()&0o022 != 0 {
+			return fmt.Errorf("refusing to start: %s (config directory) is group/world-writable (%#o) — chmod it to 0755 or stricter", dir, fi.Mode().Perm())
+		}
+	}
 	return nil
 }
 

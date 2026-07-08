@@ -32,5 +32,19 @@ RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
 
+# Drop the dangerous capabilities the panel never needs (inverted set, so the
+# ones useradd/certbot/systemctl/httpd -t DO need — CHOWN, DAC_OVERRIDE, FOWNER,
+# SETUID/SETGID, AUDIT_WRITE, … — stay available). A tighter positive allowlist
+# is a follow-up once validated on a live AlmaLinux host.
+CapabilityBoundingSet=~CAP_SYS_ADMIN CAP_SYS_MODULE CAP_SYS_RAWIO CAP_SYS_PTRACE CAP_SYS_BOOT CAP_SYS_TIME CAP_SYS_TTY_CONFIG CAP_NET_ADMIN CAP_MKNOD CAP_WAKE_ALARM CAP_AUDIT_CONTROL CAP_MAC_ADMIN CAP_MAC_OVERRIDE
+# Hide other processes, block new namespaces, restrict socket families to the
+# ones actually used, and refuse non-native syscall ABIs. (ProcSubset=pid is
+# deliberately NOT set — it would hide /proc/meminfo,stat,loadavg and break the
+# dashboard's resource stats.)
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+
 [Install]
 WantedBy=multi-user.target

@@ -7,9 +7,11 @@ package system
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -22,6 +24,84 @@ import (
 // DefaultTimeout bounds any command that does not carry its own deadline.
 const DefaultTimeout = 60 * time.Second
 
+// ---------------------------------------------------------------------------
+// Audit log
+// ---------------------------------------------------------------------------
+
+// maxAuditBytes bounds the audit log; it rotates once (path -> path.1) at this
+// size so a busy or hostile workload cannot fill the disk.
+const maxAuditBytes = 16 << 20
+
+var (
+	auditMu   sync.Mutex
+	auditW    *os.File // nil until EnableAudit; guarded by auditMu
+	auditPath string
+	auditSize int64
+)
+
+// EnableAudit opens (append-only, 0600) an audit log at path and directs every
+// privileged action through it. Best-effort: callers log the error but continue.
+// Secrets are never written — RunInput's stdin (SQL, passwords) is not logged,
+// and callers pass only non-sensitive descriptors to Audit.
+func EnableAudit(path string) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	auditMu.Lock()
+	auditW, auditPath = f, path
+	if fi, e := f.Stat(); e == nil {
+		auditSize = fi.Size()
+	}
+	auditMu.Unlock()
+	return nil
+}
+
+// Audit appends one timestamped line to the audit log (no-op until enabled).
+// detail must not contain secrets. Control characters in kind/detail are
+// stripped so an attacker-influenced value (e.g. a domain or operator-set ACME
+// email) can never split or forge audit lines.
+func Audit(kind, detail string) {
+	auditMu.Lock()
+	defer auditMu.Unlock()
+	if auditW == nil {
+		return
+	}
+	line := fmt.Sprintf("%s %s %s\n",
+		time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+		sanitizeAudit(kind), sanitizeAudit(detail))
+	if auditSize+int64(len(line)) > maxAuditBytes {
+		rotateAuditLocked()
+	}
+	if n, err := auditW.WriteString(line); err == nil {
+		auditSize += int64(n)
+	}
+}
+
+// rotateAuditLocked rotates the log once (path -> path.1). Caller holds auditMu.
+func rotateAuditLocked() {
+	if auditW == nil || auditPath == "" {
+		return
+	}
+	_ = auditW.Close()
+	_ = os.Rename(auditPath, auditPath+".1") // best-effort; replaces any prior .1
+	f, err := os.OpenFile(auditPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		auditW = nil
+		return
+	}
+	auditW, auditSize = f, 0
+}
+
+func sanitizeAudit(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '_'
+		}
+		return r
+	}, s)
+}
+
 // Run executes a command and returns its combined stdout+stderr. If the context
 // has no deadline, DefaultTimeout is applied. The returned error embeds the
 // output so callers (and logs) get actionable diagnostics.
@@ -33,6 +113,12 @@ func Run(ctx context.Context, name string, args ...string) (string, error) {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
 		defer cancel()
+	}
+	// Audit every mutating command. Read-only status polls (systemctl
+	// is-active/is-enabled, run every few seconds by the dashboard) are skipped
+	// so the log stays a record of actions, not noise.
+	if !(name == "systemctl" && len(args) > 0 && (args[0] == "is-active" || args[0] == "is-enabled")) {
+		Audit("run", name+" "+strings.Join(args, " "))
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
 	out, err := cmd.CombinedOutput()
