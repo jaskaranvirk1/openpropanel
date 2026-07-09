@@ -35,6 +35,8 @@ type filesVM struct {
 	AtRoot  bool
 	Crumbs  []crumb
 	Entries []fileRow
+	Sites   []*store.Site // populated for the chooser (when no Site is selected)
+	IsAdmin bool
 }
 
 type fileEditVM struct {
@@ -72,12 +74,34 @@ func (s *Server) openFS(w http.ResponseWriter, r *http.Request) (*filemanager.FS
 }
 
 func (s *Server) getFiles(w http.ResponseWriter, r *http.Request) {
+	viewer := auth.UserFrom(r.Context())
+
+	// No site selected -> show the chooser (browse any of your projects' files).
+	if r.FormValue("site") == "" {
+		var sites []*store.Site
+		var err error
+		if viewer.Role == store.RoleAdmin {
+			sites, err = s.store.ListSites()
+		} else {
+			sites, err = s.store.ListSitesByUser(viewer.ID)
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.render.page(w, http.StatusOK, "files", pageData{
+			User: viewer, Active: "files",
+			Flash: r.URL.Query().Get("msg"), Error: r.URL.Query().Get("err"),
+			Data:  filesVM{Sites: sites, IsAdmin: viewer.Role == store.RoleAdmin},
+		})
+		return
+	}
+
 	fs, site, ok := s.openFS(w, r)
 	if !ok {
 		return
 	}
 	defer fs.Close()
-	viewer := auth.UserFrom(r.Context())
 	cur := cleanRel(r.FormValue("path"))
 	if cur != "" && !fs.IsDir(cur) {
 		cur = ""
@@ -249,6 +273,27 @@ func (s *Server) postFileRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.filesRedirect(w, r, site.ID, dir, "msg", "Renamed to "+newName)
+}
+
+// postFileMove moves an entry into another directory within the same jail.
+func (s *Server) postFileMove(w http.ResponseWriter, r *http.Request) {
+	fs, site, ok := s.openFS(w, r)
+	if !ok {
+		return
+	}
+	defer fs.Close()
+	dir := cleanRel(r.FormValue("path"))
+	name := r.FormValue("name")
+	dest := cleanRel(r.FormValue("dest")) // target directory, relative to the jail root
+	if !validName(name) {
+		s.filesRedirect(w, r, site.ID, dir, "err", "Invalid name")
+		return
+	}
+	if err := fs.Rename(path.Join(dir, name), path.Join(dest, name)); err != nil {
+		s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+		return
+	}
+	s.filesRedirect(w, r, site.ID, dir, "msg", name+" moved to /"+dest)
 }
 
 func (s *Server) postFileChmod(w http.ResponseWriter, r *http.Request) {
