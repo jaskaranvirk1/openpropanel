@@ -50,6 +50,13 @@ const (
 	SourceImported = "imported" // discovered from a pre-existing config
 )
 
+// Web serving modes for a site's document root.
+const (
+	WebModePHP    = "php"    // PHP-FPM handler + index.php (default; today's behaviour)
+	WebModeStatic = "static" // plain static files, no SPA fallback
+	WebModeSPA    = "spa"    // single-page app: unknown paths fall back to index.html
+)
+
 // Site is a domain or subdomain served by the active web server.
 type Site struct {
 	ID         int64
@@ -62,7 +69,31 @@ type Site struct {
 	SSLEnabled bool
 	Source     string // SourceManaged | SourceImported
 	ConfFile   string // original config path (for imported sites)
+	RepoID     sql.NullInt64 // linked GitHub repo (project), if any
+	RepoSubdir string        // folder inside the repo checkout this doc root maps to
+	WebMode    string        // WebModePHP | WebModeStatic | WebModeSPA
 	CreatedAt  time.Time
+}
+
+// Repo is a GitHub repository linked to a project (its parent site), cloned once
+// into checkout_dir; each domain/subdomain points its doc root at a subfolder.
+type Repo struct {
+	ID            int64
+	ProjectSiteID int64
+	Provider      string
+	Owner         string
+	Name          string
+	URL           string
+	AuthMode      string // deploy_key | pat | https_public
+	Branch        string
+	CheckoutDir   string
+	PublicKey     string // deploy key public half (safe to store/display)
+	KeyFingerprint string
+	LastCommit    string
+	LastStatus    string // ok | error | cloning | deploying
+	LastError     string
+	LastDeployAt  sql.NullInt64
+	CreatedAt     time.Time
 }
 
 // Session is a logged-in cookie session.
@@ -123,7 +154,29 @@ CREATE TABLE IF NOT EXISTS sites (
     ssl_enabled INTEGER NOT NULL DEFAULT 0,
     source      TEXT NOT NULL DEFAULT 'managed',
     conf_file   TEXT NOT NULL DEFAULT '',
+    repo_id     INTEGER,
+    repo_subdir TEXT NOT NULL DEFAULT '',
+    web_mode    TEXT NOT NULL DEFAULT 'php',
     created_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS repos (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_site_id INTEGER NOT NULL UNIQUE REFERENCES sites(id) ON DELETE CASCADE,
+    provider        TEXT NOT NULL DEFAULT 'github',
+    owner           TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    url             TEXT NOT NULL,
+    auth_mode       TEXT NOT NULL DEFAULT 'deploy_key',
+    branch          TEXT NOT NULL DEFAULT 'main',
+    checkout_dir    TEXT NOT NULL,
+    public_key      TEXT NOT NULL DEFAULT '',
+    key_fingerprint TEXT NOT NULL DEFAULT '',
+    last_commit     TEXT NOT NULL DEFAULT '',
+    last_status     TEXT NOT NULL DEFAULT '',
+    last_error      TEXT NOT NULL DEFAULT '',
+    last_deploy_at  INTEGER,
+    created_at      INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -160,6 +213,7 @@ CREATE TABLE IF NOT EXISTS dismissed_imports (
 
 CREATE INDEX IF NOT EXISTS idx_sites_user ON sites(user_id);
 CREATE INDEX IF NOT EXISTS idx_sites_parent ON sites(parent_id);
+CREATE INDEX IF NOT EXISTS idx_repos_project ON repos(project_site_id);
 CREATE INDEX IF NOT EXISTS idx_databases_user ON databases(user_id);
 CREATE INDEX IF NOT EXISTS idx_dbusers_user ON db_users(user_id);
 `
@@ -171,6 +225,9 @@ CREATE INDEX IF NOT EXISTS idx_dbusers_user ON db_users(user_id);
 	for _, alter := range []string{
 		`ALTER TABLE sites ADD COLUMN source TEXT NOT NULL DEFAULT 'managed'`,
 		`ALTER TABLE sites ADD COLUMN conf_file TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sites ADD COLUMN repo_id INTEGER`,
+		`ALTER TABLE sites ADD COLUMN repo_subdir TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sites ADD COLUMN web_mode TEXT NOT NULL DEFAULT 'php'`,
 	} {
 		if _, err := s.db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
@@ -303,13 +360,13 @@ func (s *Store) CountBySystemUser(name string) (int, error) {
 // Sites
 // ---------------------------------------------------------------------------
 
-const siteCols = `id, user_id, domain, type, parent_id, doc_root, php_version, ssl_enabled, source, conf_file, created_at`
+const siteCols = `id, user_id, domain, type, parent_id, doc_root, php_version, ssl_enabled, source, conf_file, repo_id, repo_subdir, web_mode, created_at`
 
 func scanSite(row interface{ Scan(...any) error }) (*Site, error) {
 	var st Site
 	var created int64
 	var ssl int
-	err := row.Scan(&st.ID, &st.UserID, &st.Domain, &st.Type, &st.ParentID, &st.DocRoot, &st.PHPVersion, &ssl, &st.Source, &st.ConfFile, &created)
+	err := row.Scan(&st.ID, &st.UserID, &st.Domain, &st.Type, &st.ParentID, &st.DocRoot, &st.PHPVersion, &ssl, &st.Source, &st.ConfFile, &st.RepoID, &st.RepoSubdir, &st.WebMode, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -317,6 +374,9 @@ func scanSite(row interface{ Scan(...any) error }) (*Site, error) {
 		return nil, err
 	}
 	st.SSLEnabled = ssl != 0
+	if st.WebMode == "" {
+		st.WebMode = WebModePHP
+	}
 	st.CreatedAt = time.Unix(created, 0)
 	return &st, nil
 }
@@ -431,6 +491,87 @@ func (s *Store) MarkSiteManaged(id int64, phpVersion string) error {
 // DeleteSite removes a site (and its subdomains via cascade).
 func (s *Store) DeleteSite(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM sites WHERE id = ?`, id)
+	return err
+}
+
+// SetSiteMapping points a site's doc root at a subfolder of its project's repo
+// checkout and records the serving mode (php|static|spa).
+func (s *Store) SetSiteMapping(id int64, repoID sql.NullInt64, subdir, docRoot, webMode string) error {
+	_, err := s.db.Exec(
+		`UPDATE sites SET repo_id = ?, repo_subdir = ?, doc_root = ?, web_mode = ? WHERE id = ?`,
+		repoID, subdir, docRoot, webMode, id)
+	return err
+}
+
+// ---------------------------------------------------------------------------
+// Repositories (GitHub deploy)
+// ---------------------------------------------------------------------------
+
+const repoCols = `id, project_site_id, provider, owner, name, url, auth_mode, branch, checkout_dir, public_key, key_fingerprint, last_commit, last_status, last_error, last_deploy_at, created_at`
+
+func scanRepo(row interface{ Scan(...any) error }) (*Repo, error) {
+	var r Repo
+	var created int64
+	err := row.Scan(&r.ID, &r.ProjectSiteID, &r.Provider, &r.Owner, &r.Name, &r.URL, &r.AuthMode, &r.Branch,
+		&r.CheckoutDir, &r.PublicKey, &r.KeyFingerprint, &r.LastCommit, &r.LastStatus, &r.LastError, &r.LastDeployAt, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	r.CreatedAt = time.Unix(created, 0)
+	return &r, nil
+}
+
+// CreateRepo inserts a repository linked to a project (its parent site).
+func (s *Store) CreateRepo(r *Repo) (*Repo, error) {
+	now := time.Now()
+	if r.Provider == "" {
+		r.Provider = "github"
+	}
+	if r.Branch == "" {
+		r.Branch = "main"
+	}
+	res, err := s.db.Exec(
+		`INSERT INTO repos (project_site_id, provider, owner, name, url, auth_mode, branch, checkout_dir, public_key, key_fingerprint, last_commit, last_status, last_error, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		r.ProjectSiteID, r.Provider, r.Owner, r.Name, r.URL, r.AuthMode, r.Branch, r.CheckoutDir,
+		r.PublicKey, r.KeyFingerprint, r.LastCommit, r.LastStatus, r.LastError, now.Unix())
+	if err != nil {
+		return nil, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	r.ID = id
+	r.CreatedAt = now
+	return r, nil
+}
+
+// RepoByID looks up a repository by primary key.
+func (s *Store) RepoByID(id int64) (*Repo, error) {
+	return scanRepo(s.db.QueryRow(`SELECT `+repoCols+` FROM repos WHERE id = ?`, id))
+}
+
+// RepoByProject returns the repository linked to a project (its parent site).
+func (s *Store) RepoByProject(siteID int64) (*Repo, error) {
+	return scanRepo(s.db.QueryRow(`SELECT `+repoCols+` FROM repos WHERE project_site_id = ?`, siteID))
+}
+
+// UpdateRepoDeploy records the outcome of a clone/deploy.
+func (s *Store) UpdateRepoDeploy(id int64, commit, status, errMsg string, when time.Time) error {
+	_, err := s.db.Exec(
+		`UPDATE repos SET last_commit = ?, last_status = ?, last_error = ?, last_deploy_at = ? WHERE id = ?`,
+		commit, status, errMsg, when.Unix(), id)
+	return err
+}
+
+// DeleteRepo removes a repository record (keys/checkout on disk are cleaned by
+// the caller).
+func (s *Store) DeleteRepo(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM repos WHERE id = ?`, id)
 	return err
 }
 
