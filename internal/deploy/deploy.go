@@ -188,13 +188,25 @@ func (m *Manager) gitEnv(keyPath, knownHosts string) []string {
 	if keyPath != "" {
 		ssh += " -i " + shellQuote(keyPath)
 	}
-	return append(os.Environ(),
+	// Build from a small allowlist rather than the panel's full (root) process
+	// environment: the git child runs as the tenant uid, so anything we pass is
+	// readable by the tenant. Carry only what git/ssh need to function; drop
+	// everything else so no operator-injected variable can leak across.
+	env := []string{
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_ASKPASS=/bin/true",
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_SSH_COMMAND="+ssh,
-	)
+		"GIT_SSH_COMMAND=" + ssh,
+	}
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "PATH=") || strings.HasPrefix(kv, "HOME=") ||
+			strings.HasPrefix(kv, "LANG=") || strings.HasPrefix(kv, "LC_") ||
+			strings.HasPrefix(kv, "TERM=") {
+			env = append(env, kv)
+		}
+	}
+	return env
 }
 
 // runGit runs git as the tenant with hardening flags and (for SSH modes) the
@@ -250,6 +262,16 @@ func (m *Manager) Clone(ctx context.Context, r *store.Repo, uid, gid uint32) err
 	if !ValidBranch(r.Branch) {
 		return errors.New("invalid branch name")
 	}
+	// Clone starts from a clean directory, so a pre-existing checkout is removed
+	// first. Guard against destroying real content: only remove the target if it
+	// is empty or is itself a git checkout (safe to re-create). Refuse to
+	// os.RemoveAll a non-empty directory we did not create — e.g. a doc root a
+	// tenant filled with their own files that happens to collide with this path.
+	if fi, err := os.Stat(r.CheckoutDir); err == nil && fi.IsDir() {
+		if !dirEmpty(r.CheckoutDir) && !isGitCheckout(r.CheckoutDir) {
+			return fmt.Errorf("refusing to overwrite %s: it is not empty and is not a git checkout — move its contents aside first", r.CheckoutDir)
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(r.CheckoutDir), 0o755); err != nil {
 		return err
 	}
@@ -258,6 +280,24 @@ func (m *Manager) Clone(ctx context.Context, r *store.Repo, uid, gid uint32) err
 	_, err := m.runGit(ctx, r, uid, gid, "",
 		"clone", "--branch", r.Branch, "--single-branch", "--depth", "1", cloneURL(r), r.CheckoutDir)
 	return err
+}
+
+// isGitCheckout reports whether dir looks like a git working tree (has a .git).
+func isGitCheckout(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil
+}
+
+// dirEmpty reports whether dir has no entries. A dir it cannot read is treated
+// as non-empty (fail safe — do not delete what we cannot inspect).
+func dirEmpty(dir string) bool {
+	f, err := os.Open(dir)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	_, err = f.Readdirnames(1)
+	return err == io.EOF
 }
 
 // Deploy fetches and hard-resets an existing checkout to origin/<branch>,

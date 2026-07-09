@@ -262,7 +262,9 @@ func (s *Server) postCreateSite(w http.ResponseWriter, r *http.Request) {
 	domain := r.FormValue("domain")
 	phpVersion := r.FormValue("php_version")
 	docRoot := r.FormValue("doc_root")
-	if _, err := s.domains.CreateSite(r.Context(), owner, domain, phpVersion, docRoot); err != nil {
+	// Only an admin may aim a custom doc root outside this site's own tree.
+	allowSharedRoot := u.Role == store.RoleAdmin
+	if _, err := s.domains.CreateSite(r.Context(), owner, domain, phpVersion, docRoot, allowSharedRoot); err != nil {
 		redirect(w, r, "/sites", "err", s.opErr(r, err))
 		return
 	}
@@ -322,9 +324,11 @@ func (s *Server) postAddSubdomain(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	u := auth.UserFrom(r.Context())
 	label := r.FormValue("label")
 	docRoot := r.FormValue("doc_root")
-	if _, err := s.domains.AddSubdomain(r.Context(), site.ID, label, docRoot); err != nil {
+	allowSharedRoot := u != nil && u.Role == store.RoleAdmin
+	if _, err := s.domains.AddSubdomain(r.Context(), site.ID, label, docRoot, allowSharedRoot); err != nil {
 		redirect(w, r, "/sites", "err", s.opErr(r, err))
 		return
 	}

@@ -34,8 +34,8 @@ func (s *Service) tenantIDs(ownerID int64) (uint32, uint32, error) {
 	}
 	uid, _ := strconv.Atoi(u.Uid)
 	gid, _ := strconv.Atoi(u.Gid)
-	if uid == 0 {
-		return 0, 0, errors.New("refusing to run git as root")
+	if uid == 0 || gid == 0 {
+		return 0, 0, errors.New("refusing to run git as root (uid/gid 0)")
 	}
 	return uint32(uid), uint32(gid), nil
 }
@@ -253,6 +253,12 @@ func (s *Service) projectTenant(projectSiteID int64) (uint32, uint32, error) {
 // the cleaned relative path, guaranteeing the result stays inside the checkout.
 func repoSubPath(checkout, subdir string) (abs, rel string, err error) {
 	rel = strings.TrimPrefix(filepath.Clean("/"+strings.TrimSpace(subdir)), "/")
+	// The subdir is tenant-supplied and its join becomes a doc root that is
+	// interpolated verbatim into the vhost the panel reloads as root; reject any
+	// config metacharacter (newline, ';', '"', '{', ...) before it gets there.
+	if !safeVHostPath(rel) {
+		return "", "", errors.New("folder name contains characters that are not allowed")
+	}
 	abs = filepath.Join(checkout, filepath.FromSlash(rel))
 	if !pathWithin(checkout, abs) {
 		return "", "", errors.New("folder must be inside the repository")

@@ -113,7 +113,9 @@ func (s *Service) docRootFor(domain string) string {
 
 // CreateSite provisions a brand-new main domain for an owner. docRootArg is an
 // optional custom document root; empty uses the default /var/www/<domain>/public_html.
-func (s *Service) CreateSite(ctx context.Context, ownerID int64, rawDomain, phpLabel, docRootArg string) (*store.Site, error) {
+// allowSharedRoot must be true only when the caller is an admin — it widens the
+// custom doc root's allowed area from this site's own tree to the whole web root.
+func (s *Service) CreateSite(ctx context.Context, ownerID int64, rawDomain, phpLabel, docRootArg string, allowSharedRoot bool) (*store.Site, error) {
 	domain, err := NormalizeDomain(rawDomain)
 	if err != nil {
 		return nil, err
@@ -133,7 +135,7 @@ func (s *Service) CreateSite(ctx context.Context, ownerID int64, rawDomain, phpL
 	docRoot := s.docRootFor(domain)
 	external := false // operator supplied a custom path we must not seed over or delete
 	if strings.TrimSpace(docRootArg) != "" {
-		p, verr := s.validateDocRoot(docRootArg, owner)
+		p, verr := s.validateDocRoot(docRootArg, owner, domain, allowSharedRoot)
 		if verr != nil {
 			return nil, verr
 		}
@@ -181,7 +183,8 @@ func (s *Service) CreateSite(ctx context.Context, ownerID int64, rawDomain, phpL
 
 // AddSubdomain creates <label>.<parentDomain> under an existing site. docRootArg
 // is an optional custom document root; empty uses the default layout.
-func (s *Service) AddSubdomain(ctx context.Context, parentID int64, label, docRootArg string) (*store.Site, error) {
+// allowSharedRoot must be true only for an admin caller (see CreateSite).
+func (s *Service) AddSubdomain(ctx context.Context, parentID int64, label, docRootArg string, allowSharedRoot bool) (*store.Site, error) {
 	label = strings.TrimSpace(strings.ToLower(label))
 	if !labelRe.MatchString(label) {
 		return nil, fmt.Errorf("invalid subdomain label %q", label)
@@ -209,7 +212,7 @@ func (s *Service) AddSubdomain(ctx context.Context, parentID int64, label, docRo
 	docRoot := s.docRootFor(domain)
 	external := false // operator supplied a custom path we must not seed over or delete
 	if strings.TrimSpace(docRootArg) != "" {
-		p, verr := s.validateDocRoot(docRootArg, owner)
+		p, verr := s.validateDocRoot(docRootArg, owner, domain, allowSharedRoot)
 		if verr != nil {
 			return nil, verr
 		}
@@ -884,19 +887,39 @@ func (s *Service) provisionDocRoot(docRoot, domain, systemUser string, external 
 	return nil
 }
 
-// validateDocRoot vets an operator-supplied document root: it must be an
-// absolute path contained within an allowed base (the web root, or the owner's
-// home directory), with no symlink escape. Returns the cleaned, resolved path.
-func (s *Service) validateDocRoot(raw string, owner *store.User) (string, error) {
+// validateDocRoot vets a caller-supplied document root. It must be an absolute
+// path, free of characters that could break out of the generated vhost, and
+// contained within an allowed base with no symlink escape. The returned path is
+// interpolated verbatim into the Apache/Nginx config the panel reloads as root,
+// so both the character check and the containment check are security-critical.
+//
+// Containment is scoped by trust: a non-admin caller (allowShared=false) may
+// only point a doc root at THIS site's own tree (/var/www/<domain>) or the
+// owner's home directory, so a tenant can never aim it into another tenant's
+// directory or at the shared web root itself. Admins (allowShared=true) may use
+// the whole web root. Returns the cleaned, resolved path.
+func (s *Service) validateDocRoot(raw string, owner *store.User, domain string, allowShared bool) (string, error) {
 	p := filepath.Clean(strings.TrimSpace(raw))
 	if !filepath.IsAbs(p) {
 		return "", errors.New("document root must be an absolute path")
 	}
-	bases := []string{filepath.Clean(s.cfg.WebRoot)}
+	if !safeVHostPath(p) {
+		return "", errors.New("document root contains characters that are not allowed in a path")
+	}
+	var bases []string
+	if allowShared {
+		bases = append(bases, filepath.Clean(s.cfg.WebRoot))
+	} else if domain != "" {
+		// A non-admin is confined to this specific site's own directory tree.
+		bases = append(bases, filepath.Clean(filepath.Join(s.cfg.WebRoot, domain)))
+	}
 	if owner != nil && owner.SystemUser != "" {
 		if u, err := osuser.Lookup(owner.SystemUser); err == nil && u.HomeDir != "" {
 			bases = append(bases, filepath.Clean(u.HomeDir))
 		}
+	}
+	if len(bases) == 0 {
+		return "", errors.New("no permitted location for a custom document root")
 	}
 	within := func(base, path string) bool {
 		return path == base || strings.HasPrefix(path, base+string(os.PathSeparator))
@@ -932,6 +955,28 @@ func (s *Service) validateDocRoot(raw string, owner *store.User) (string, error)
 		p = resolved
 	}
 	return p, nil
+}
+
+// safeVHostPath reports whether a filesystem path is safe to interpolate
+// verbatim into an Apache/Nginx vhost directive. The vhost templates are
+// text/template (no escaping), so a document root containing a newline or a
+// config metacharacter could inject arbitrary directives that the panel then
+// reloads as root. We reject control characters and the shell/config
+// metacharacters that can break out of `root <X>;` or `<Directory "<X>">`.
+// Path separators, drive colons, dots, dashes, underscores and spaces stay
+// allowed so ordinary (including Windows dev) paths pass. ToSlash first so a
+// literal backslash is rejected on Linux while the Windows separator is not.
+func safeVHostPath(p string) bool {
+	for _, r := range filepath.ToSlash(p) {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+		switch r {
+		case '\\', '"', '\'', '`', ';', '{', '}', '#', '<', '>', '|', '*', '?', '$':
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) chown(path, systemUser string) {

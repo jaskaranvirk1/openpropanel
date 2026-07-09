@@ -13,17 +13,69 @@ func TestValidateDocRoot(t *testing.T) {
 	webroot := filepath.Join(base, "www")
 	s := &Service{cfg: &config.Config{WebRoot: webroot}}
 
-	if _, err := s.validateDocRoot(filepath.Join(webroot, "site", "dist", "browser"), nil); err != nil {
-		t.Errorf("a path under the web root should be allowed, got: %v", err)
+	// Admin (allowShared=true): anywhere under the web root is fine.
+	if _, err := s.validateDocRoot(filepath.Join(webroot, "site", "dist", "browser"), nil, "site.com", true); err != nil {
+		t.Errorf("a path under the web root should be allowed for admin, got: %v", err)
 	}
-	if _, err := s.validateDocRoot(filepath.Join(base, "etc", "passwd"), nil); err == nil {
+	if _, err := s.validateDocRoot(filepath.Join(base, "etc", "passwd"), nil, "site.com", true); err == nil {
 		t.Error("a path outside the web root must be rejected")
 	}
-	if _, err := s.validateDocRoot("relative/path", nil); err == nil {
+	if _, err := s.validateDocRoot("relative/path", nil, "site.com", true); err == nil {
 		t.Error("a relative path must be rejected")
 	}
-	if _, err := s.validateDocRoot(filepath.Join(webroot, "..", "secret"), nil); err == nil {
+	if _, err := s.validateDocRoot(filepath.Join(webroot, "..", "secret"), nil, "site.com", true); err == nil {
 		t.Error("traversal escaping the web root must be rejected")
+	}
+}
+
+// The cross-tenant takeover guard: a non-admin (allowShared=false) may only aim
+// a doc root at their own site's tree or their home — never another site's
+// directory, and never the shared web root itself.
+func TestValidateDocRootTenantScoping(t *testing.T) {
+	base := t.TempDir()
+	webroot := filepath.Join(base, "www")
+	s := &Service{cfg: &config.Config{WebRoot: webroot}}
+
+	if _, err := s.validateDocRoot(filepath.Join(webroot, "mine.com", "dist"), nil, "mine.com", false); err != nil {
+		t.Errorf("a non-admin pointing at their OWN site tree should be allowed, got: %v", err)
+	}
+	if _, err := s.validateDocRoot(filepath.Join(webroot, "victim.com", "public_html"), nil, "mine.com", false); err == nil {
+		t.Error("a non-admin must NOT be able to aim their doc root at another site's directory")
+	}
+	if _, err := s.validateDocRoot(webroot, nil, "mine.com", false); err == nil {
+		t.Error("a non-admin must NOT be able to aim their doc root at the shared web root")
+	}
+}
+
+// The vhost config-injection guard: paths carrying newlines or config
+// metacharacters must be rejected before they can reach the (unescaped) vhost.
+func TestValidateDocRootRejectsConfigMetachars(t *testing.T) {
+	base := t.TempDir()
+	webroot := filepath.Join(base, "www")
+	s := &Service{cfg: &config.Config{WebRoot: webroot}}
+
+	bad := []string{
+		webroot + "/x\nlocation / { root /; }", // newline -> new nginx directive
+		webroot + "/x;deny all",                // semicolon -> extra nginx directive
+		webroot + `/x"><Directory />`,          // quote -> break out of apache <Directory>
+		webroot + "/x{}",                       // nginx block braces
+	}
+	for _, p := range bad {
+		if _, err := s.validateDocRoot(p, nil, "x.com", true); err == nil {
+			t.Errorf("doc root with config metacharacters must be rejected: %q", p)
+		}
+	}
+}
+
+func TestRepoSubPathRejectsConfigMetachars(t *testing.T) {
+	checkout := filepath.Join(t.TempDir(), "repo")
+	if _, _, err := repoSubPath(checkout, "frontend/dist"); err != nil {
+		t.Errorf("an ordinary subdir should be allowed, got: %v", err)
+	}
+	for _, sub := range []string{"x\nlocation / {}", "x;deny", `x"y`, "x{}"} {
+		if _, _, err := repoSubPath(checkout, sub); err == nil {
+			t.Errorf("repo subdir with config metacharacters must be rejected: %q", sub)
+		}
 	}
 }
 
