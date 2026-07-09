@@ -66,6 +66,12 @@ func run() error {
 	if flag.Arg(0) == "doctor" {
 		os.Exit(doctor.Run(cfg, *cfgPath))
 	}
+	// `openpropanel reset-password [username]` — reset a panel account's password
+	// to a new random one and print it (defaults to the first admin). Useful when
+	// the first-run password was lost.
+	if flag.Arg(0) == "reset-password" {
+		os.Exit(resetPassword(cfg, flag.Arg(1)))
+	}
 	if *listen != "" {
 		cfg.ListenAddr = *listen
 	}
@@ -206,6 +212,48 @@ func checkSecurePerms(cfgPath, dataDir string) error {
 		}
 	}
 	return nil
+}
+
+// resetPassword sets a new random password on a panel account (the first admin
+// if no username is given) and prints it. Runs as a one-shot subcommand.
+func resetPassword(cfg *config.Config, username string) int {
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "open database:", err)
+		return 1
+	}
+	defer st.Close()
+
+	var u *store.User
+	if username != "" {
+		u, err = st.UserByUsername(username)
+	} else {
+		u, err = st.FirstAdmin()
+	}
+	if err != nil || u == nil {
+		fmt.Fprintln(os.Stderr, "no matching account found (is the panel installed and initialised?)")
+		return 1
+	}
+	pw, err := randomHex(12) // 24 hex chars
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	hash, err := auth.HashPassword(pw)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if err := st.UpdateUserPassword(u.ID, hash); err != nil {
+		fmt.Fprintln(os.Stderr, "update password:", err, "\n(if it says the database is locked, stop the service first: systemctl stop openpropanel)")
+		return 1
+	}
+	fmt.Println("──────────────────────────────────────────────")
+	fmt.Println("  Password reset. Log in with:")
+	fmt.Printf("    username: %s\n", u.Username)
+	fmt.Printf("    password: %s\n", pw)
+	fmt.Println("──────────────────────────────────────────────")
+	return 0
 }
 
 func randomHex(nBytes int) (string, error) {

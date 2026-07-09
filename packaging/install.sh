@@ -158,9 +158,13 @@ echo "=================================================================="
 echo "  Access from anywhere:"
 [ -n "$PUB_IP" ] && echo "     https://${PUB_IP}:${PANEL_PORT}" || echo "     https://<server-ip>:${PANEL_PORT}"
 echo
-echo "  Username:  ${USERNAME:-admin}"
-echo "  Password:  ${PASSWORD:-see: journalctl -u openpropanel  (or ${CREDS})}"
-echo "  (Change the password right after your first login.)"
+echo "  Username:  ${USERNAME:-(unchanged from first install)}"
+echo "  Password:  ${PASSWORD:-(unchanged from first install)}"
+if [ -z "$PASSWORD" ]; then
+    echo "             Lost it? Reset with:  ${BIN_DEST} reset-password"
+else
+    echo "  (Change the password right after your first login.)"
+fi
 echo "------------------------------------------------------------------"
 echo "  * HTTPS is self-signed by default — click through the browser warning."
 echo "    For a trusted cert: point a domain here and use Settings -> Panel"
