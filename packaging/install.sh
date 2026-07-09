@@ -65,14 +65,25 @@ install -m 0755 "$BIN_SRC" "$BIN_DEST"
 
 log "Creating config at $CONF_DIR"
 mkdir -p "$CONF_DIR"
-if [ ! -f "$CONF_DIR/config.json" ]; then
-    cat > "$CONF_DIR/config.json" <<JSON
+CONF="$CONF_DIR/config.json"
+if [ ! -f "$CONF" ]; then
+    cat > "$CONF" <<JSON
 {
   "listen_addr": ":${PANEL_PORT}",
   "acme_email": ""
 }
 JSON
-    chmod 600 "$CONF_DIR/config.json"
+    chmod 600 "$CONF"
+else
+    # Upgrade: migrate the retired 2087 default and adopt the config's port so the
+    # firewall + banner match what the panel actually listens on.
+    if grep -q '":2087"' "$CONF"; then
+        sed -i 's/":2087"/":9443"/' "$CONF"
+        firewall-cmd --permanent --remove-port=2087/tcp >/dev/null 2>&1 || true
+        log "Migrated panel port 2087 -> 9443 in $CONF"
+    fi
+    cfgport="$(sed -nE 's/.*"listen_addr"[[:space:]]*:[[:space:]]*"[^"]*:([0-9]+)".*/\1/p' "$CONF" | head -1)"
+    if [ -n "$cfgport" ]; then PANEL_PORT="$cfgport"; fi
 fi
 # Cockpit-style TLS drop-in: put panel.crt + panel.key here to serve a real cert.
 mkdir -p "$CONF_DIR/certs"
@@ -125,7 +136,8 @@ if command -v restorecon >/dev/null 2>&1; then
 fi
 
 log "Starting Open ProPanel"
-systemctl enable --now openpropanel
+systemctl enable openpropanel >/dev/null 2>&1 || true
+systemctl restart openpropanel   # restart so a re-run applies the new binary/config
 
 # Wait for first-run to generate the random admin credentials, then read them.
 # Reads are guarded with '|| true' so a slow first boot cannot abort under set -e.

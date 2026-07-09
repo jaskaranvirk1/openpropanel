@@ -147,18 +147,32 @@ UNIT
 fi
 
 mkdir -p "$CONF_DIR"
-if [ ! -f "$CONF_DIR/config.json" ]; then
-    printf '{\n  "listen_addr": ":%s",\n  "acme_email": ""\n}\n' "$PANEL_PORT" > "$CONF_DIR/config.json"
-    chmod 600 "$CONF_DIR/config.json"
+CONF="$CONF_DIR/config.json"
+if [ ! -f "$CONF" ]; then
+    # Fresh install: write config with the chosen port.
+    printf '{\n  "listen_addr": ":%s",\n  "acme_email": ""\n}\n' "$PANEL_PORT" > "$CONF"
+    chmod 600 "$CONF"
+else
+    # Upgrade: reconcile so the firewall + banner ALWAYS match the port the panel
+    # actually listens on (this is what caused the listening-vs-firewall mismatch).
+    # Migrate the retired 2087 default to 9443, then adopt whatever port is in the
+    # config as the effective PANEL_PORT.
+    if grep -q '":2087"' "$CONF"; then
+        sed -i 's/":2087"/":9443"/' "$CONF"
+        firewall-cmd --permanent --remove-port=2087/tcp >/dev/null 2>&1 || true
+        log "Migrated panel port 2087 -> 9443 in $CONF"
+    fi
+    cfgport="$(sed -nE 's/.*"listen_addr"[[:space:]]*:[[:space:]]*"[^"]*:([0-9]+)".*/\1/p' "$CONF" | head -1)"
+    if [ -n "$cfgport" ]; then PANEL_PORT="$cfgport"; fi
 fi
 # Cockpit-style TLS drop-in: put panel.crt + panel.key here to serve a real cert.
 mkdir -p "$CONF_DIR/certs"
 chmod 700 "$CONF_DIR/certs"
 
 # --- firewall + SELinux ------------------------------------------------------
-# Open http/https (needed for hosted sites + Let's Encrypt). The root-privileged
-# panel port stays CLOSED by default — reach it via an SSH tunnel. Override with
-# PROPANEL_OPEN=ip (only the IP you're connecting from) or PROPANEL_OPEN=all.
+# Open http/https (for hosted sites + Let's Encrypt) and, by default, the panel
+# port so it is reachable from anywhere. Override with PROPANEL_OPEN=ip (only
+# your SSH client IP) or PROPANEL_OPEN=none (closed; reach it via an SSH tunnel).
 if command -v firewall-cmd >/dev/null 2>&1; then
     log "Configuring firewall"
     # Named firewalld service so the port can also be managed with:
@@ -206,7 +220,10 @@ fi
 # --- start -------------------------------------------------------------------
 log "Starting Open ProPanel"
 systemctl daemon-reload
-systemctl enable --now openpropanel
+systemctl enable openpropanel >/dev/null 2>&1 || true
+# 'restart' (not just enable --now) so a re-run/upgrade actually applies the new
+# binary and any migrated config, instead of leaving the old process running.
+systemctl restart openpropanel
 
 # Wait for first-run to generate the random admin credentials, then read them.
 # The reads are guarded with '|| true' so a slow/failed first boot (creds file
