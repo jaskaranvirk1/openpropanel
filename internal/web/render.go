@@ -38,8 +38,8 @@ type renderer struct {
 // Nav link classes. These live in Go (not just HTML) so the Tailwind content
 // scanner must include ./internal/web/**/*.go — see tailwind.config.js.
 const (
-	navActive = "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium bg-indigo-500/10 text-indigo-300 ring-1 ring-inset ring-indigo-500/20"
-	navIdle   = "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-400 hover:text-slate-100 hover:bg-white/5 transition-colors"
+	navActive = "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium bg-blue-50 text-blue-700"
+	navIdle   = "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 transition-colors"
 )
 
 var funcMap = template.FuncMap{
@@ -75,11 +75,11 @@ var funcMap = template.FuncMap{
 	"barClass": func(pct float64) string {
 		switch {
 		case pct >= 90:
-			return "bg-rose-500"
+			return "bg-red-500"
 		case pct >= 70:
-			return "bg-amber-400"
+			return "bg-amber-500"
 		default:
-			return "bg-indigo-500"
+			return "bg-blue-600"
 		}
 	},
 	// barWidth returns a clamped, pre-sanitised CSS width for a meter fill.
