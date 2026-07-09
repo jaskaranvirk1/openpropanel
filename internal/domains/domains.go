@@ -816,6 +816,10 @@ func (s *Service) renderVHost(site *store.Site) error {
 		DocRoot:   site.DocRoot,
 		PHPSocket: s.php.SocketPath(site.Domain),
 		SSL:       site.SSLEnabled,
+		Mode:      site.WebMode,
+	}
+	if vh.Mode == "" {
+		vh.Mode = store.WebModePHP
 	}
 	if site.Type == store.SiteMain {
 		vh.ServerAlias = "www." + site.Domain

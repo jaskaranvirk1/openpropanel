@@ -117,11 +117,23 @@ server {
     listen [::]:443 ssl;
     server_name {{.Domain}}{{if .ServerAlias}} {{.ServerAlias}}{{end}};
     root {{.DocRoot}};
-    index index.php index.html;
 
     ssl_certificate {{.CertFile}};
     ssl_certificate_key {{.KeyFile}};
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+{{template "nginxServe" .}}
+    access_log /var/log/nginx/{{.Domain}}-access.log;
+    error_log /var/log/nginx/{{.Domain}}-error.log;
+}
+{{- else}}
+
+{{template "nginxServe" .}}
+    access_log /var/log/nginx/{{.Domain}}-access.log;
+    error_log /var/log/nginx/{{.Domain}}-error.log;
+}
+{{- end}}
+{{define "nginxServe"}}    index {{if eq .Mode "php"}}index.php index.html{{else}}index.html{{end}};
 
     # Deny dotfiles (.git, .env, .user.ini, ...) while keeping .well-known reachable.
     location ~ /\.(?!well-known/) {
@@ -129,8 +141,9 @@ server {
     }
 
     location / {
-        try_files $uri $uri/ /index.php?$query_string;
+        try_files $uri $uri/ {{if eq .Mode "spa"}}/index.html{{else if eq .Mode "static"}}=404{{else}}/index.php?$query_string{{end}};
     }
+{{- if eq .Mode "php"}}
 {{- if .PHPSocket}}
 
     location ~ \.php$ {
@@ -141,34 +154,5 @@ server {
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
     }
 {{- end}}
-
-    access_log /var/log/nginx/{{.Domain}}-access.log;
-    error_log /var/log/nginx/{{.Domain}}-error.log;
-}
-{{- else}}
-
-    index index.php index.html;
-
-    location ~ /\.(?!well-known/) {
-        deny all;
-    }
-
-    location / {
-        try_files $uri $uri/ /index.php?$query_string;
-    }
-{{- if .PHPSocket}}
-
-    location ~ \.php$ {
-        try_files $uri =404;
-        fastcgi_pass unix:{{.PHPSocket}};
-        fastcgi_index index.php;
-        include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
-    }
 {{- end}}
-
-    access_log /var/log/nginx/{{.Domain}}-access.log;
-    error_log /var/log/nginx/{{.Domain}}-error.log;
-}
-{{- end}}
-`))
+{{end}}`))

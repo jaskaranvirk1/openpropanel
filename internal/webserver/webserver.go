@@ -15,6 +15,10 @@ type VHost struct {
 	SSL         bool
 	CertFile    string // fullchain.pem
 	KeyFile     string // privkey.pem
+	// Mode selects how the doc root is served: "php" (PHP-FPM + index.php),
+	// "static" (plain files), or "spa" (unknown paths fall back to index.html
+	// for client-side-routed apps like Angular/React). Empty is treated as php.
+	Mode string
 }
 
 // Manager is implemented by each web-server backend (Apache, Nginx).

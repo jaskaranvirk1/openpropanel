@@ -126,17 +126,7 @@ var vhostTmpl = template.Must(template.New("vhost").Parse(`# Managed by Open Pro
     RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
 {{- else}}
 
-    <Directory "{{.DocRoot}}">
-        Options -Indexes +SymLinksIfOwnerMatch
-        AllowOverride All
-        Require all granted
-    </Directory>
-{{- if .PHPSocket}}
-    <FilesMatch \.php$>
-        SetHandler "proxy:unix:{{.PHPSocket}}|fcgi://localhost"
-    </FilesMatch>
-{{- end}}
-    DirectoryIndex index.php index.html
+{{template "apacheServe" .}}
 {{- end}}
 
     ErrorLog "/var/log/httpd/{{.Domain}}-error.log"
@@ -163,20 +153,28 @@ var vhostTmpl = template.Must(template.New("vhost").Parse(`# Managed by Open Pro
         Require all denied
     </FilesMatch>
 
-    <Directory "{{.DocRoot}}">
+{{template "apacheServe" .}}
+
+    ErrorLog "/var/log/httpd/{{.Domain}}-ssl-error.log"
+    CustomLog "/var/log/httpd/{{.Domain}}-ssl-access.log" combined
+</VirtualHost>
+{{- end}}
+{{define "apacheServe"}}    <Directory "{{.DocRoot}}">
         Options -Indexes +SymLinksIfOwnerMatch
         AllowOverride All
         Require all granted
+{{- if eq .Mode "spa"}}
+        FallbackResource /index.html
+{{- end}}
     </Directory>
+{{- if eq .Mode "php"}}
 {{- if .PHPSocket}}
     <FilesMatch \.php$>
         SetHandler "proxy:unix:{{.PHPSocket}}|fcgi://localhost"
     </FilesMatch>
 {{- end}}
     DirectoryIndex index.php index.html
-
-    ErrorLog "/var/log/httpd/{{.Domain}}-ssl-error.log"
-    CustomLog "/var/log/httpd/{{.Domain}}-ssl-access.log" combined
-</VirtualHost>
+{{- else}}
+    DirectoryIndex index.html
 {{- end}}
-`))
+{{- end}}`))
