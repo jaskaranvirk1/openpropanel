@@ -817,6 +817,14 @@ func (s *Service) AdoptSite(ctx context.Context, id int64, phpLabel string) erro
 
 // renderVHost writes the Apache config reflecting the site's current state.
 func (s *Service) renderVHost(site *store.Site) error {
+	// Defence in depth: the doc root is interpolated verbatim into the
+	// (unescaped) vhost the panel reloads as root. Every caller should already
+	// have validated it, but refuse outright if a config metacharacter ever
+	// reaches here — including the one externally-sourced path, an adopted
+	// site's scanned-from-disk doc root.
+	if !safeVHostPath(site.DocRoot) {
+		return fmt.Errorf("document root %q contains characters that are not allowed in a vhost", site.DocRoot)
+	}
 	vh := webserver.VHost{
 		Domain:    site.Domain,
 		DocRoot:   site.DocRoot,
@@ -952,9 +960,55 @@ func (s *Service) validateDocRoot(raw string, owner *store.User, domain string, 
 		if !okResolved {
 			return "", errors.New("document root resolves outside the allowed area (symlink)")
 		}
+		// Re-check the RESOLVED path: EvalSymlinks can introduce on-disk
+		// directory names the tenant controls (e.g. a symlink whose target is
+		// named `x;autoindex on`), laundering a config metacharacter past the
+		// raw-input check and into the unescaped vhost.
+		if !safeVHostPath(resolved) {
+			return "", errors.New("document root resolves to a path with characters that are not allowed")
+		}
 		p = resolved
 	}
 	return p, nil
+}
+
+// SafeDocRoot returns the site's document root, resolved through symlinks, after
+// re-checking (for a non-admin caller — trusted=false) that it still lies inside
+// the owner's permitted area. This guards the file manager against a TOCTOU:
+// site.DocRoot may sit in a tenant-writable location (the owner's home, or their
+// git checkout) that the tenant can swap for a symlink into another tenant's
+// tree AFTER the site was created — a creation-time check alone cannot catch it,
+// and os.OpenRoot follows symlinks in the root path itself. Admin callers
+// (trusted=true) are unrestricted, matching validateDocRoot's allowShared model.
+func (s *Service) SafeDocRoot(site *store.Site, trusted bool) (string, error) {
+	if site == nil {
+		return "", errors.New("no site")
+	}
+	if trusted {
+		return site.DocRoot, nil
+	}
+	resolved, err := filepath.EvalSymlinks(site.DocRoot)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve document root: %w", err)
+	}
+	bases := []string{filepath.Join(s.cfg.WebRoot, site.Domain)}
+	if s.store != nil {
+		if owner, oerr := s.store.UserByID(site.UserID); oerr == nil && owner.SystemUser != "" {
+			if u, uerr := osuser.Lookup(owner.SystemUser); uerr == nil && u.HomeDir != "" {
+				bases = append(bases, u.HomeDir)
+			}
+		}
+	}
+	for _, b := range bases {
+		rb, e := filepath.EvalSymlinks(b)
+		if e != nil {
+			rb = filepath.Clean(b)
+		}
+		if resolved == rb || strings.HasPrefix(resolved, rb+string(os.PathSeparator)) {
+			return resolved, nil
+		}
+	}
+	return "", errors.New("document root is outside the permitted area")
 }
 
 // safeVHostPath reports whether a filesystem path is safe to interpolate

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/openpropanel/openpropanel/internal/config"
+	"github.com/openpropanel/openpropanel/internal/store"
 )
 
 func TestValidateDocRoot(t *testing.T) {
@@ -64,6 +65,36 @@ func TestValidateDocRootRejectsConfigMetachars(t *testing.T) {
 		if _, err := s.validateDocRoot(p, nil, "x.com", true); err == nil {
 			t.Errorf("doc root with config metacharacters must be rejected: %q", p)
 		}
+	}
+}
+
+// SafeDocRoot must confine a non-admin's file-manager jail to the site's own
+// tree even when the stored doc root points elsewhere (the open-time TOCTOU
+// guard). Admin callers are unrestricted.
+func TestSafeDocRoot(t *testing.T) {
+	base := t.TempDir()
+	webroot := filepath.Join(base, "www")
+	mine := filepath.Join(webroot, "mine.com", "public_html")
+	victim := filepath.Join(webroot, "victim.com", "public_html")
+	for _, d := range []string{mine, victim} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &Service{cfg: &config.Config{WebRoot: webroot}}
+
+	ownSite := &store.Site{Domain: "mine.com", DocRoot: mine}
+	if got, err := s.SafeDocRoot(ownSite, false); err != nil || got != mine {
+		t.Errorf("a site's own tree should be allowed: got %q err %v", got, err)
+	}
+	// Stored doc root points into another site's tree (post-creation swap).
+	escaped := &store.Site{Domain: "mine.com", DocRoot: victim}
+	if _, err := s.SafeDocRoot(escaped, false); err == nil {
+		t.Error("a doc root resolving into another site's tree must be rejected for a non-admin")
+	}
+	// Admins are trusted and unrestricted.
+	if got, err := s.SafeDocRoot(escaped, true); err != nil || got != victim {
+		t.Errorf("admin caller should be unrestricted: got %q err %v", got, err)
 	}
 }
 

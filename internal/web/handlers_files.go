@@ -65,7 +65,16 @@ func (s *Server) openFS(w http.ResponseWriter, r *http.Request) (*filemanager.FS
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return nil, nil, false
 	}
-	fs, err := filemanager.New(site.DocRoot)
+	// Re-validate the doc root at open time (not just at creation): a non-admin
+	// whose doc root lives in a tenant-writable location could have swapped it
+	// for a symlink into another tenant's tree. SafeDocRoot resolves symlinks
+	// and confirms it is still inside the owner's permitted area.
+	root, err := s.domains.SafeDocRoot(site, viewer.Role == store.RoleAdmin)
+	if err != nil {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return nil, nil, false
+	}
+	fs, err := filemanager.New(root)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return nil, nil, false
