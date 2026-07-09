@@ -252,7 +252,8 @@ func (s *Server) postCreateSite(w http.ResponseWriter, r *http.Request) {
 	}
 	domain := r.FormValue("domain")
 	phpVersion := r.FormValue("php_version")
-	if _, err := s.domains.CreateSite(r.Context(), owner, domain, phpVersion); err != nil {
+	docRoot := r.FormValue("doc_root")
+	if _, err := s.domains.CreateSite(r.Context(), owner, domain, phpVersion, docRoot); err != nil {
 		redirect(w, r, "/sites", "err", s.opErr(r, err))
 		return
 	}
@@ -313,7 +314,8 @@ func (s *Server) postAddSubdomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	label := r.FormValue("label")
-	if _, err := s.domains.AddSubdomain(r.Context(), site.ID, label); err != nil {
+	docRoot := r.FormValue("doc_root")
+	if _, err := s.domains.AddSubdomain(r.Context(), site.ID, label, docRoot); err != nil {
 		redirect(w, r, "/sites", "err", s.opErr(r, err))
 		return
 	}

@@ -22,6 +22,11 @@
       <input id="domain" name="domain" required placeholder="example.com" pattern="[a-zA-Z0-9.-]+"
              class="block w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 focus:outline-none">
     </div>
+    <div class="min-w-[220px] flex-1">
+      <label class="mb-1.5 block text-xs font-medium text-slate-400" for="doc_root">Folder <span class="text-slate-600">· optional</span></label>
+      <input id="doc_root" name="doc_root" placeholder="default: /var/www/<domain>/public_html"
+             class="block w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 focus:outline-none">
+    </div>
     <div>
       <label class="mb-1.5 block text-xs font-medium text-slate-400" for="php_version">PHP</label>
       <select id="php_version" name="php_version"

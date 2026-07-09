@@ -108,8 +108,9 @@ func (s *Service) docRootFor(domain string) string {
 	return filepath.Join(s.cfg.WebRoot, domain, "public_html")
 }
 
-// CreateSite provisions a brand-new main domain for an owner.
-func (s *Service) CreateSite(ctx context.Context, ownerID int64, rawDomain, phpLabel string) (*store.Site, error) {
+// CreateSite provisions a brand-new main domain for an owner. docRootArg is an
+// optional custom document root; empty uses the default /var/www/<domain>/public_html.
+func (s *Service) CreateSite(ctx context.Context, ownerID int64, rawDomain, phpLabel, docRootArg string) (*store.Site, error) {
 	domain, err := NormalizeDomain(rawDomain)
 	if err != nil {
 		return nil, err
@@ -127,7 +128,15 @@ func (s *Service) CreateSite(ctx context.Context, ownerID int64, rawDomain, phpL
 	}
 
 	docRoot := s.docRootFor(domain)
-	if err := s.provisionDocRoot(docRoot, domain, owner.SystemUser); err != nil {
+	external := false // operator supplied a custom path we must not seed over or delete
+	if strings.TrimSpace(docRootArg) != "" {
+		p, verr := s.validateDocRoot(docRootArg, owner)
+		if verr != nil {
+			return nil, verr
+		}
+		docRoot, external = p, true
+	}
+	if err := s.provisionDocRoot(docRoot, domain, owner.SystemUser, external); err != nil {
 		return nil, err
 	}
 
@@ -141,18 +150,18 @@ func (s *Service) CreateSite(ctx context.Context, ownerID int64, rawDomain, phpL
 
 	// Configure PHP-FPM pool, then Apache vhost.
 	if err := s.php.ConfigureSite(ctx, site, version, owner.SystemUser); err != nil {
-		s.rollbackFiles(domain, docRoot)
+		s.rollbackFiles(domain, docRoot, external)
 		return nil, fmt.Errorf("php-fpm: %w", err)
 	}
 	if err := s.renderVHost(site); err != nil {
 		_ = s.php.RemoveSite(ctx, domain)
-		s.rollbackFiles(domain, docRoot)
+		s.rollbackFiles(domain, docRoot, external)
 		return nil, fmt.Errorf("apache config: %w", err)
 	}
 	if err := s.web().Apply(ctx); err != nil {
 		_ = s.web().Remove(domain)
 		_ = s.php.RemoveSite(ctx, domain)
-		s.rollbackFiles(domain, docRoot)
+		s.rollbackFiles(domain, docRoot, external)
 		return nil, fmt.Errorf("apache reload: %w", err)
 	}
 
@@ -161,14 +170,15 @@ func (s *Service) CreateSite(ctx context.Context, ownerID int64, rawDomain, phpL
 		_ = s.web().Remove(domain)
 		_ = s.php.RemoveSite(ctx, domain)
 		_ = s.web().Apply(ctx)
-		s.rollbackFiles(domain, docRoot)
+		s.rollbackFiles(domain, docRoot, external)
 		return nil, err
 	}
 	return created, nil
 }
 
-// AddSubdomain creates <label>.<parentDomain> under an existing site.
-func (s *Service) AddSubdomain(ctx context.Context, parentID int64, label string) (*store.Site, error) {
+// AddSubdomain creates <label>.<parentDomain> under an existing site. docRootArg
+// is an optional custom document root; empty uses the default layout.
+func (s *Service) AddSubdomain(ctx context.Context, parentID int64, label, docRootArg string) (*store.Site, error) {
 	label = strings.TrimSpace(strings.ToLower(label))
 	if !labelRe.MatchString(label) {
 		return nil, fmt.Errorf("invalid subdomain label %q", label)
@@ -194,7 +204,15 @@ func (s *Service) AddSubdomain(ctx context.Context, parentID int64, label string
 	}
 
 	docRoot := s.docRootFor(domain)
-	if err := s.provisionDocRoot(docRoot, domain, owner.SystemUser); err != nil {
+	external := false // operator supplied a custom path we must not seed over or delete
+	if strings.TrimSpace(docRootArg) != "" {
+		p, verr := s.validateDocRoot(docRootArg, owner)
+		if verr != nil {
+			return nil, verr
+		}
+		docRoot, external = p, true
+	}
+	if err := s.provisionDocRoot(docRoot, domain, owner.SystemUser, external); err != nil {
 		return nil, err
 	}
 
@@ -207,18 +225,18 @@ func (s *Service) AddSubdomain(ctx context.Context, parentID int64, label string
 		PHPVersion: version.Label,
 	}
 	if err := s.php.ConfigureSite(ctx, site, version, owner.SystemUser); err != nil {
-		s.rollbackFiles(domain, docRoot)
+		s.rollbackFiles(domain, docRoot, external)
 		return nil, fmt.Errorf("php-fpm: %w", err)
 	}
 	if err := s.renderVHost(site); err != nil {
 		_ = s.php.RemoveSite(ctx, domain)
-		s.rollbackFiles(domain, docRoot)
+		s.rollbackFiles(domain, docRoot, external)
 		return nil, err
 	}
 	if err := s.web().Apply(ctx); err != nil {
 		_ = s.web().Remove(domain)
 		_ = s.php.RemoveSite(ctx, domain)
-		s.rollbackFiles(domain, docRoot)
+		s.rollbackFiles(domain, docRoot, external)
 		return nil, err
 	}
 	created, err := s.store.CreateSite(site)
@@ -228,7 +246,7 @@ func (s *Service) AddSubdomain(ctx context.Context, parentID int64, label string
 		_ = s.web().Remove(domain)
 		_ = s.php.RemoveSite(ctx, domain)
 		_ = s.web().Apply(ctx)
-		s.rollbackFiles(domain, docRoot)
+		s.rollbackFiles(domain, docRoot, external)
 		return nil, err
 	}
 	return created, nil
@@ -766,15 +784,22 @@ func (s *Service) resolveVersion(label string) (php.Version, error) {
 	return php.Version{}, fmt.Errorf("PHP version %q is not installed", label)
 }
 
-// provisionDocRoot creates the document root, seeds a landing page, and (in
-// production, when the owner has a system user) hands ownership to that user.
-func (s *Service) provisionDocRoot(docRoot, domain, systemUser string) error {
+// provisionDocRoot ensures the document root and its ACME challenge dir exist.
+// For the DEFAULT layout it also seeds a landing page and hands ownership to the
+// tenant. For an EXTERNAL (operator-supplied) root it does neither: it must not
+// drop files into — or chown — a folder that may already hold the site's own
+// content (or that is about to receive a git checkout).
+func (s *Service) provisionDocRoot(docRoot, domain, systemUser string, external bool) error {
 	if err := os.MkdirAll(docRoot, 0o755); err != nil {
 		return err
 	}
 	// ACME challenge directory so certbot webroot mode works out of the box.
+	// Additive (a subdir) — safe even inside an existing doc root.
 	if err := os.MkdirAll(filepath.Join(docRoot, ".well-known", "acme-challenge"), 0o755); err != nil {
 		return err
+	}
+	if external {
+		return nil
 	}
 	index := filepath.Join(docRoot, "index.html")
 	if _, err := os.Stat(index); os.IsNotExist(err) {
@@ -784,6 +809,56 @@ func (s *Service) provisionDocRoot(docRoot, domain, systemUser string) error {
 		s.chown(docRoot, systemUser)
 	}
 	return nil
+}
+
+// validateDocRoot vets an operator-supplied document root: it must be an
+// absolute path contained within an allowed base (the web root, or the owner's
+// home directory), with no symlink escape. Returns the cleaned, resolved path.
+func (s *Service) validateDocRoot(raw string, owner *store.User) (string, error) {
+	p := filepath.Clean(strings.TrimSpace(raw))
+	if !filepath.IsAbs(p) {
+		return "", errors.New("document root must be an absolute path")
+	}
+	bases := []string{filepath.Clean(s.cfg.WebRoot)}
+	if owner != nil && owner.SystemUser != "" {
+		if u, err := osuser.Lookup(owner.SystemUser); err == nil && u.HomeDir != "" {
+			bases = append(bases, filepath.Clean(u.HomeDir))
+		}
+	}
+	within := func(base, path string) bool {
+		return path == base || strings.HasPrefix(path, base+string(os.PathSeparator))
+	}
+	contained := func(path string) bool {
+		for _, b := range bases {
+			if within(b, path) {
+				return true
+			}
+		}
+		return false
+	}
+	if !contained(p) {
+		return "", fmt.Errorf("document root must be inside %s", strings.Join(bases, " or "))
+	}
+	// If the path already exists, resolve symlinks and re-check so a symlink
+	// cannot point the doc root outside the allowed area.
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		okResolved := false
+		for _, b := range bases {
+			rb, e := filepath.EvalSymlinks(b)
+			if e != nil {
+				rb = b
+			}
+			if within(rb, resolved) {
+				okResolved = true
+				break
+			}
+		}
+		if !okResolved {
+			return "", errors.New("document root resolves outside the allowed area (symlink)")
+		}
+		p = resolved
+	}
+	return p, nil
 }
 
 func (s *Service) chown(path, systemUser string) {
@@ -808,10 +883,14 @@ func (s *Service) chown(path, systemUser string) {
 	})
 }
 
-func (s *Service) rollbackFiles(domain, docRoot string) {
+func (s *Service) rollbackFiles(domain, docRoot string, external bool) {
 	_ = s.web().Remove(domain)
-	// Only remove the doc root during rollback if it is empty-ish (freshly
-	// created). We check for our seeded index and no user files beyond it.
+	// NEVER delete an operator-supplied (external) doc root — it may hold the
+	// site's real files or a git checkout. Only the default, freshly-created
+	// /var/www/<domain>/public_html layout is safe to remove on rollback.
+	if external {
+		return
+	}
 	if isFreshDocRoot(docRoot) {
 		_ = os.RemoveAll(filepath.Dir(docRoot)) // remove /var/www/<domain>
 	}
