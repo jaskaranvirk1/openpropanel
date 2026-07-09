@@ -50,6 +50,32 @@ func TestProvisionDocRootExternalIsUntouched(t *testing.T) {
 	}
 }
 
+func TestParentDomainIn(t *testing.T) {
+	uni := map[string]bool{
+		"thenorthculture.com":     true,
+		"www.thenorthculture.com": true,
+		"api.thenorthculture.com": true,
+		"reptoapp.com":            true,
+	}
+	want := map[string]string{
+		"api.thenorthculture.com": "thenorthculture.com",
+		"www.thenorthculture.com": "thenorthculture.com",
+		"thenorthculture.com":     "", // apex — no parent in the set
+		"reptoapp.com":            "",
+		"unknown.example.org":     "", // parent not tracked
+	}
+	for d, exp := range want {
+		if got := parentDomainIn(d, uni); got != exp {
+			t.Errorf("parentDomainIn(%q) = %q, want %q", d, got, exp)
+		}
+	}
+	// The most specific (longest) parent wins for nested names.
+	nested := map[string]bool{"example.com": true, "api.example.com": true}
+	if got := parentDomainIn("v1.api.example.com", nested); got != "api.example.com" {
+		t.Errorf("nested parent should be the longest match, got %q", got)
+	}
+}
+
 func TestProvisionDocRootDefaultIsSeeded(t *testing.T) {
 	s := &Service{cfg: &config.Config{Dev: true}}
 	dir := filepath.Join(t.TempDir(), "public_html")

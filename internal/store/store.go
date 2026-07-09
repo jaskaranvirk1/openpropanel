@@ -401,6 +401,14 @@ func (s *Store) UpdateSitePHP(id int64, version string) error {
 	return err
 }
 
+// SetSiteParent re-links a site as a subdomain of parentID (used when import
+// discovers that a domain already tracked as a flat main is really a subdomain
+// of another site, so the panel can group them under one project).
+func (s *Store) SetSiteParent(id, parentID int64) error {
+	_, err := s.db.Exec(`UPDATE sites SET type = ?, parent_id = ? WHERE id = ?`, SiteSubdomain, parentID, id)
+	return err
+}
+
 // SetSiteSSL records whether SSL is enabled for a site.
 func (s *Store) SetSiteSSL(id int64, enabled bool) error {
 	v := 0

@@ -605,34 +605,92 @@ func (s *Service) ImportExisting(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	dismissed, _ := s.store.DismissedImports()
-	n := 0
+
+	// Filter to importable, not-yet-tracked candidates.
+	var candidates []vhostscan.Site
 	for _, d := range found {
-		if d.Managed {
-			continue // a config we generated ourselves
-		}
-		if !validImportDomain(d.Domain) {
-			continue // not a real/safe hostname (bare IP, wildcard, ...)
-		}
-		if dismissed[d.Domain] {
-			continue // operator previously removed it from the panel
+		if d.Managed || !validImportDomain(d.Domain) || dismissed[d.Domain] {
+			continue
 		}
 		if _, err := s.store.SiteByDomain(d.Domain); err == nil {
 			continue // already tracked
 		}
+		candidates = append(candidates, d)
+	}
+
+	// Universe of possible parents = every existing site + every candidate, so a
+	// discovered subdomain (api.example.com) can be grouped under its parent
+	// (example.com) whether the parent is already tracked or in this same batch.
+	universe := map[string]bool{}
+	if existing, e := s.store.ListSites(); e == nil {
+		for _, st := range existing {
+			universe[st.Domain] = true
+		}
+	}
+	for _, d := range candidates {
+		universe[d.Domain] = true
+	}
+
+	n := 0
+	create := func(d vhostscan.Site, typ string, parent sql.NullInt64) {
 		if _, err := s.store.CreateSite(&store.Site{
-			UserID:     admin.ID,
-			Domain:     d.Domain,
-			Type:       store.SiteMain,
-			DocRoot:    d.DocRoot,
-			SSLEnabled: d.SSL,
-			Source:     store.SourceImported,
-			ConfFile:   d.File,
-		}); err != nil {
+			UserID: admin.ID, Domain: d.Domain, Type: typ, ParentID: parent,
+			DocRoot: d.DocRoot, SSLEnabled: d.SSL, Source: store.SourceImported, ConfFile: d.File,
+		}); err == nil {
+			n++
+		}
+	}
+	// Pass 1: import parents (mains) first so their rows exist to link against.
+	for _, d := range candidates {
+		if parentDomainIn(d.Domain, universe) == "" {
+			create(d, store.SiteMain, sql.NullInt64{})
+		}
+	}
+	// Pass 2: import subdomains linked to their parent (falling back to a flat
+	// main only if the parent turns out not to be tracked).
+	for _, d := range candidates {
+		pd := parentDomainIn(d.Domain, universe)
+		if pd == "" {
 			continue
 		}
-		n++
+		if parent, perr := s.store.SiteByDomain(pd); perr == nil {
+			create(d, store.SiteSubdomain, sql.NullInt64{Int64: parent.ID, Valid: true})
+		} else {
+			create(d, store.SiteMain, sql.NullInt64{})
+		}
+	}
+
+	// Relink: an existing IMPORTED main that is really a subdomain of another
+	// site (e.g. imported before its parent, or from an older version) is grouped
+	// under that parent. Only imported rows are touched — managed vhosts aren't.
+	if existing, e := s.store.ListSites(); e == nil {
+		for _, st := range existing {
+			if st.Source != store.SourceImported || st.Type != store.SiteMain {
+				continue
+			}
+			pd := parentDomainIn(st.Domain, universe)
+			if pd == "" {
+				continue
+			}
+			if parent, perr := s.store.SiteByDomain(pd); perr == nil && parent.ID != st.ID {
+				_ = s.store.SetSiteParent(st.ID, parent.ID)
+			}
+		}
 	}
 	return n, nil
+}
+
+// parentDomainIn returns the longest domain in universe that is a strict parent
+// suffix of d (d == "<label>." + parent), or "" if none. It is what groups
+// subdomains under their parent project on import.
+func parentDomainIn(d string, universe map[string]bool) string {
+	best := ""
+	for p := range universe {
+		if p != d && strings.HasSuffix(d, "."+p) && len(p) > len(best) {
+			best = p
+		}
+	}
+	return best
 }
 
 // AdoptSite converts an imported site to fully-managed. It generates an Open
@@ -666,18 +724,25 @@ func (s *Service) AdoptSite(ctx context.Context, id int64, phpLabel string) erro
 	orig := site.ConfFile
 	target := s.web().ConfPath(site.Domain)
 
-	// Refuse to adopt when the original config is shared, so we never take down
-	// or duplicate co-located sites.
+	// Collect every config file that defines this domain. certbot's Apache
+	// plugin splits a site across <domain>.conf and <domain>-le-ssl.conf, so
+	// "multiple files" is normal — we back them ALL up rather than refusing. A
+	// single file that ALSO defines other sites is still unsafe to auto-split.
+	var origFiles []string
 	if orig != "" {
-		if len(distinctDomains(vhostscan.ParseFile(orig, nginx))) > 1 {
-			return fmt.Errorf("%s shares its config file with other sites — split them into separate files before adopting", site.Domain)
+		origFiles = vhostscan.FilesForDomain(vhostDir, nginx, site.Domain)
+		if len(origFiles) == 0 {
+			origFiles = []string{orig}
 		}
-		if len(vhostscan.FilesForDomain(vhostDir, nginx, site.Domain)) > 1 {
-			return fmt.Errorf("%s is defined across multiple config files — consolidate them before adopting", site.Domain)
+		for _, f := range origFiles {
+			if len(distinctDomains(vhostscan.ParseFile(f, nginx))) > 1 {
+				return fmt.Errorf("%s shares %s with other sites — split them into separate files before adopting", site.Domain, filepath.Base(f))
+			}
 		}
 	}
 
-	disabled, targetBackup, wrote := "", "", false
+	targetBackup, wrote := "", false
+	var disabled [][2]string // {backupPath, originalPath}
 	restore := func() {
 		if wrote {
 			_ = os.Remove(target)
@@ -685,23 +750,24 @@ func (s *Service) AdoptSite(ctx context.Context, id int64, phpLabel string) erro
 		if targetBackup != "" {
 			_ = os.Rename(targetBackup, target)
 		}
-		if disabled != "" {
-			_ = os.Rename(disabled, orig)
+		for _, d := range disabled {
+			_ = os.Rename(d[0], d[1])
 		}
 		_ = s.php.RemoveSite(ctx, site.Domain)
 		_ = s.web().Reload(ctx)
 	}
 
-	// Disable (and thereby back up) the original. If it still exists the rename
-	// MUST succeed, or we cannot safely proceed.
-	if orig != "" {
-		if _, serr := os.Stat(orig); serr == nil {
-			disabled = orig + ".disabled-by-openpropanel"
-			if rerr := os.Rename(orig, disabled); rerr != nil {
-				disabled = ""
-				return fmt.Errorf("could not back up the original config %s: %w", orig, rerr)
-			}
+	// Disable (and thereby back up) every original config file for this domain.
+	for _, f := range origFiles {
+		if _, serr := os.Stat(f); serr != nil {
+			continue
 		}
+		bak := f + ".disabled-by-openpropanel"
+		if rerr := os.Rename(f, bak); rerr != nil {
+			restore()
+			return fmt.Errorf("could not back up the original config %s: %w", f, rerr)
+		}
+		disabled = append(disabled, [2]string{bak, f})
 	}
 	// Back up any UNRELATED file already occupying our target path.
 	if target != orig {
