@@ -7,8 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/openpropanel/openpropanel/internal/config"
@@ -51,6 +55,29 @@ func (m *Manager) Issue(ctx context.Context, domain string, altNames []string, d
 	if m.cfg.ACMEEmail == "" {
 		return errors.New("no ACME contact email configured (set acme_email in the panel settings)")
 	}
+	// --- DNS preflight -------------------------------------------------------
+	// Fail fast with a clear, actionable message instead of letting certbot emit
+	// a raw challenge log. Also drop any alt name that has no DNS record (e.g. an
+	// unconfigured "www") so a single missing record doesn't sink the whole
+	// request.
+	pfCtx, pfCancel := context.WithTimeout(ctx, 8*time.Second)
+	server := serverIPs(pfCtx)
+	primaryIPs := lookupHost(pfCtx, domain)
+	if len(primaryIPs) == 0 {
+		pfCancel()
+		return fmt.Errorf("%s has no DNS record yet — add a DNS A record pointing it to this server%s, then retry (DNS changes can take a few minutes to propagate)",
+			domain, ipHint(server))
+	}
+	var alts, dropped []string
+	for _, a := range altNames {
+		if len(lookupHost(pfCtx, a)) > 0 {
+			alts = append(alts, a)
+		} else {
+			dropped = append(dropped, a)
+		}
+	}
+	pfCancel()
+
 	// ACME can take longer than the default command timeout, and must not be
 	// killed if the browser request is cancelled mid-issue, so give it its own
 	// several-minute deadline detached from the request context.
@@ -62,7 +89,7 @@ func (m *Manager) Issue(ctx context.Context, domain string, altNames []string, d
 		"-w", docRoot,
 		"-d", domain,
 	}
-	for _, alt := range altNames {
+	for _, alt := range alts {
 		args = append(args, "-d", alt)
 	}
 	args = append(args,
@@ -75,8 +102,99 @@ func (m *Manager) Issue(ctx context.Context, domain string, altNames []string, d
 		// served instead of Apache clinging to the expired one in memory.
 		"--deploy-hook", fmt.Sprintf("systemctl reload %s", m.cfg.ApacheService),
 	)
-	_, err := system.Run(ctx, "certbot", args...)
-	return err
+	if _, err := system.Run(ctx, "certbot", args...); err != nil {
+		// Enrich the failure with DNS context: the #1 cause is the domain not
+		// pointing at this server.
+		if !anyMatch(primaryIPs, server) {
+			return fmt.Errorf("%s currently resolves to %s, not this server%s — point its DNS A record here and retry. (Using Cloudflare? Set the record to DNS-only/grey-cloud during issuance.)%s",
+				domain, strings.Join(primaryIPs, ", "), ipHint(server), droppedNote(dropped))
+		}
+		return fmt.Errorf("certificate issuance failed — check that port 80 is reachable from the internet for the ACME challenge.%s (%w)",
+			droppedNote(dropped), err)
+	}
+	return nil
+}
+
+// lookupHost resolves a host to its A/AAAA addresses, returning nil on failure
+// (including NXDOMAIN).
+func lookupHost(ctx context.Context, host string) []string {
+	ips, err := net.DefaultResolver.LookupHost(ctx, host)
+	if err != nil {
+		return nil
+	}
+	return ips
+}
+
+// serverIPs returns the set of IP addresses that belong to this host: its
+// non-loopback interface addresses plus, best-effort, its public IP (so the
+// check still works when the public IP is NAT'd rather than bound locally).
+func serverIPs(ctx context.Context) map[string]bool {
+	set := map[string]bool{}
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, a := range addrs {
+			if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+				set[ipnet.IP.String()] = true
+			}
+		}
+	}
+	if ip := publicIP(ctx); ip != "" {
+		set[ip] = true
+	}
+	return set
+}
+
+func publicIP(ctx context.Context) string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.ipify.org", nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
+	if ip := net.ParseIP(strings.TrimSpace(string(b))); ip != nil {
+		return ip.String()
+	}
+	return ""
+}
+
+func anyMatch(resolved []string, server map[string]bool) bool {
+	for _, r := range resolved {
+		if ip := net.ParseIP(r); ip != nil && server[ip.String()] {
+			return true
+		}
+	}
+	return false
+}
+
+// ipHint returns " (<ip>)" preferring a public address, for the error message.
+func ipHint(server map[string]bool) string {
+	var fallback string
+	for ip := range server {
+		p := net.ParseIP(ip)
+		if p == nil {
+			continue
+		}
+		if fallback == "" {
+			fallback = ip
+		}
+		if !p.IsPrivate() && !p.IsLoopback() && !p.IsLinkLocalUnicast() {
+			return " (" + ip + ")"
+		}
+	}
+	if fallback != "" {
+		return " (" + fallback + ")"
+	}
+	return ""
+}
+
+func droppedNote(dropped []string) string {
+	if len(dropped) == 0 {
+		return ""
+	}
+	return " Skipped (no DNS record): " + strings.Join(dropped, ", ") + "."
 }
 
 // simulateIssue writes placeholder cert files so the SSL flow is exercisable
