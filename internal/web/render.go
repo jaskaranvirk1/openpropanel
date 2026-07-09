@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/openpropanel/openpropanel/internal/store"
@@ -42,7 +43,19 @@ const (
 )
 
 var funcMap = template.FuncMap{
-	"hbytes": humanBytes,
+	// dict builds a map from alternating key/value args, so a sub-template can be
+	// called with several named values: {{template "row" (dict "S" .Site "R" $)}}.
+	"dict": func(kv ...any) map[string]any {
+		m := make(map[string]any, len(kv)/2)
+		for i := 0; i+1 < len(kv); i += 2 {
+			if k, ok := kv[i].(string); ok {
+				m[k] = kv[i+1]
+			}
+		}
+		return m
+	},
+	"shortpath": shortPath,
+	"hbytes":    humanBytes,
 	"hsize": func(n int64) string {
 		if n < 0 {
 			n = 0
@@ -158,6 +171,17 @@ func staticHandler() http.Handler {
 		panic(err) // embed path is a compile-time constant; cannot fail at runtime
 	}
 	return http.FileServerFS(sub)
+}
+
+// shortPath abbreviates a long doc-root path for display, keeping the last two
+// components (e.g. /var/www/x/frontend/dist/browser -> …/dist/browser).
+func shortPath(p string) string {
+	p = strings.TrimRight(p, "/")
+	parts := strings.Split(p, "/")
+	if len(parts) <= 4 {
+		return p
+	}
+	return "…/" + strings.Join(parts[len(parts)-2:], "/")
 }
 
 func humanBytes(b uint64) string {

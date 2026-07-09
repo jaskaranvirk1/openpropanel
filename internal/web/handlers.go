@@ -48,6 +48,7 @@ type siteRow struct {
 	Site      *store.Site
 	OwnerName string
 	Subs      []*store.Site
+	Repo      *store.Repo // linked GitHub repo for this project, or nil
 }
 
 type sitesVM struct {
@@ -55,6 +56,7 @@ type sitesVM struct {
 	PHPVersions []php.Version
 	IsAdmin     bool
 	Users       []*store.User
+	Modes       []string // serving-mode choices for the folder-mapping UI
 }
 
 type usersVM struct {
@@ -226,10 +228,17 @@ func (s *Server) getSites(w http.ResponseWriter, r *http.Request) {
 	}
 	rows := make([]siteRow, 0, len(mains))
 	for _, m := range mains {
-		rows = append(rows, siteRow{Site: m, OwnerName: names[m.UserID], Subs: subsByParent[m.ID]})
+		row := siteRow{Site: m, OwnerName: names[m.UserID], Subs: subsByParent[m.ID]}
+		if repo, err := s.store.RepoByProject(m.ID); err == nil {
+			row.Repo = repo
+		}
+		rows = append(rows, row)
 	}
 
-	vm := sitesVM{Rows: rows, PHPVersions: s.php.DetectVersions(), IsAdmin: isAdmin}
+	vm := sitesVM{
+		Rows: rows, PHPVersions: s.php.DetectVersions(), IsAdmin: isAdmin,
+		Modes: []string{store.WebModePHP, store.WebModeStatic, store.WebModeSPA},
+	}
 	if isAdmin {
 		vm.Users, _ = s.store.ListUsers()
 	}
