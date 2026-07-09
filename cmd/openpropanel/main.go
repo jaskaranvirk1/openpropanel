@@ -19,6 +19,7 @@ import (
 	"github.com/openpropanel/openpropanel/internal/apache"
 	"github.com/openpropanel/openpropanel/internal/auth"
 	"github.com/openpropanel/openpropanel/internal/config"
+	"github.com/openpropanel/openpropanel/internal/deploy"
 	"github.com/openpropanel/openpropanel/internal/doctor"
 	"github.com/openpropanel/openpropanel/internal/domains"
 	"github.com/openpropanel/openpropanel/internal/mariadb"
@@ -120,7 +121,8 @@ func run() error {
 	sysuserMgr := sysuser.New(cfg)
 	mariadbMgr := mariadb.New(cfg)
 	pmaMgr := phpmyadmin.New(cfg)
-	domainSvc := domains.New(cfg, *cfgPath, st, apacheMgr, nginxMgr, phpMgr, sslMgr, sysuserMgr, mariadbMgr)
+	deployMgr := deploy.New(cfg)
+	domainSvc := domains.New(cfg, *cfgPath, st, apacheMgr, nginxMgr, phpMgr, sslMgr, sysuserMgr, mariadbMgr, deployMgr)
 
 	// Adopt any vhosts already configured on the host so they show up in the
 	// panel immediately (imported, read-only until explicitly adopted).

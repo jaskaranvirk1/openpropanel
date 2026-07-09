@@ -19,6 +19,7 @@ import (
 	"sync"
 
 	"github.com/openpropanel/openpropanel/internal/config"
+	"github.com/openpropanel/openpropanel/internal/deploy"
 	"github.com/openpropanel/openpropanel/internal/mariadb"
 	"github.com/openpropanel/openpropanel/internal/php"
 	"github.com/openpropanel/openpropanel/internal/ssl"
@@ -42,14 +43,16 @@ type Service struct {
 	ssl       *ssl.Manager
 	sysuser   *sysuser.Manager
 	mariadb   *mariadb.Manager
+	deploy    *deploy.Manager
 
 	switchMu  sync.Mutex // serializes web-server switches
 	accountMu sync.Mutex // serializes account deletion (last-admin guard)
+	deployMu  sync.Mutex // serializes clone/deploy per process
 }
 
 // New wires the orchestrator.
-func New(cfg *config.Config, cfgPath string, s *store.Store, apacheWeb, nginxWeb webserver.Manager, p *php.Manager, sl *ssl.Manager, su *sysuser.Manager, mdb *mariadb.Manager) *Service {
-	return &Service{cfg: cfg, cfgPath: cfgPath, store: s, apacheWeb: apacheWeb, nginxWeb: nginxWeb, php: p, ssl: sl, sysuser: su, mariadb: mdb}
+func New(cfg *config.Config, cfgPath string, s *store.Store, apacheWeb, nginxWeb webserver.Manager, p *php.Manager, sl *ssl.Manager, su *sysuser.Manager, mdb *mariadb.Manager, dep *deploy.Manager) *Service {
+	return &Service{cfg: cfg, cfgPath: cfgPath, store: s, apacheWeb: apacheWeb, nginxWeb: nginxWeb, php: p, ssl: sl, sysuser: su, mariadb: mdb, deploy: dep}
 }
 
 // web returns the active web-server manager based on the current config.

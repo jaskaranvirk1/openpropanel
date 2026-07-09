@@ -560,6 +560,12 @@ func (s *Store) RepoByProject(siteID int64) (*Repo, error) {
 	return scanRepo(s.db.QueryRow(`SELECT `+repoCols+` FROM repos WHERE project_site_id = ?`, siteID))
 }
 
+// SetRepoKey stores a repo's generated deploy-key public half + fingerprint.
+func (s *Store) SetRepoKey(id int64, publicKey, fingerprint string) error {
+	_, err := s.db.Exec(`UPDATE repos SET public_key = ?, key_fingerprint = ? WHERE id = ?`, publicKey, fingerprint, id)
+	return err
+}
+
 // UpdateRepoDeploy records the outcome of a clone/deploy.
 func (s *Store) UpdateRepoDeploy(id int64, commit, status, errMsg string, when time.Time) error {
 	_, err := s.db.Exec(

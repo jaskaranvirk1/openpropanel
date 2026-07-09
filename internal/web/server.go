@@ -83,6 +83,16 @@ func (s *Server) Handler() http.Handler {
 	app.HandleFunc("POST /sites/{id}/subdomains", s.postAddSubdomain)
 	app.HandleFunc("POST /sites/scan", s.postScanSites)
 	app.HandleFunc("POST /sites/{id}/adopt", s.postAdoptSite)
+	app.HandleFunc("POST /sites/{id}/mapping", s.postMapSite)
+
+	// GitHub deploy. {id} on /projects is the project's main site; {id} on
+	// /repos is the repo. Every handler is owner-or-admin gated.
+	app.HandleFunc("POST /projects/{id}/repo", s.postLinkRepo)
+	app.HandleFunc("POST /projects/{id}/repo/delete", s.postUnlinkRepo)
+	app.HandleFunc("POST /projects/{id}/deploy", s.postDeployProject)
+	app.HandleFunc("POST /repos/{id}/clone", s.postCloneRepo)
+	app.HandleFunc("POST /repos/{id}/verify", s.postVerifyRepo)
+	app.HandleFunc("GET /repos/{id}/tree", s.getRepoTree)
 
 	app.HandleFunc("GET /databases", s.getDatabases)
 	app.HandleFunc("POST /databases", s.postCreateDatabase)
