@@ -277,6 +277,14 @@ func (s *Store) UpdateUserPassword(id int64, hash string) error {
 	return err
 }
 
+// UpdateUserCredentials sets both the username and the bcrypt hash for an
+// account in one statement — used by the first-login setup wizard. The UNIQUE
+// constraint on username surfaces a duplicate as an error.
+func (s *Store) UpdateUserCredentials(id int64, username, hash string) error {
+	_, err := s.db.Exec(`UPDATE users SET username = ?, password_hash = ? WHERE id = ?`, username, hash, id)
+	return err
+}
+
 // DeleteUser removes an account (and, via cascade, its sites and sessions).
 func (s *Store) DeleteUser(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM users WHERE id = ?`, id)

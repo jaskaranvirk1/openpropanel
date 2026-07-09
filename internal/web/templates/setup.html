@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Set up your account · Open ProPanel</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="h-full bg-slate-950 text-slate-200 antialiased">
+<div class="relative flex min-h-full items-center justify-center overflow-hidden px-4 py-10">
+  <div class="pointer-events-none absolute -top-40 left-1/2 h-96 w-96 -translate-x-1/2 rounded-full bg-indigo-600/20 blur-3xl"></div>
+
+  <div class="relative w-full max-w-sm">
+    <div class="mb-8 flex flex-col items-center gap-3">
+      <div class="grid h-12 w-12 place-items-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-500/30">
+        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h10M4 18h7"/></svg>
+      </div>
+      <h1 class="text-xl font-semibold tracking-tight text-white">Welcome to Open <span class="text-indigo-400">ProPanel</span></h1>
+      <p class="text-center text-sm text-slate-400">Create your admin account to finish setup.<br>This replaces the temporary install password.</p>
+    </div>
+
+    <div class="rounded-2xl border border-white/5 bg-slate-900/60 p-6 shadow-2xl backdrop-blur">
+      {{if .Error}}
+      <div class="mb-4 rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">{{.Error}}</div>
+      {{end}}
+      <form method="post" action="/setup" class="space-y-4">
+        <div>
+          <label class="mb-1.5 block text-sm font-medium text-slate-300" for="username">Username</label>
+          <input id="username" name="username" type="text" autocomplete="username" required autofocus
+                 value="{{with .User}}{{.Username}}{{end}}" pattern="[a-z0-9][a-z0-9_-]{2,31}"
+                 class="block w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 focus:outline-none">
+          <p class="mt-1 text-xs text-slate-500">3–32 chars: lowercase letters, digits, <span class="font-mono">_</span> or <span class="font-mono">-</span>.</p>
+        </div>
+        <div>
+          <label class="mb-1.5 block text-sm font-medium text-slate-300" for="password">New password</label>
+          <input id="password" name="password" type="password" autocomplete="new-password" required minlength="8"
+                 class="block w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 focus:outline-none">
+        </div>
+        <div>
+          <label class="mb-1.5 block text-sm font-medium text-slate-300" for="confirm">Confirm password</label>
+          <input id="confirm" name="confirm" type="password" autocomplete="new-password" required minlength="8"
+                 class="block w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 focus:outline-none">
+        </div>
+        <button type="submit"
+                class="flex w-full items-center justify-center rounded-lg bg-indigo-500 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 hover:bg-indigo-400 focus:ring-2 focus:ring-indigo-500/40 focus:outline-none transition-colors">
+          Create account &amp; continue
+        </button>
+      </form>
+    </div>
+    <p class="mt-6 text-center text-xs text-slate-600">You can add more accounts later under Users.</p>
+  </div>
+</div>
+</body>
+</html>

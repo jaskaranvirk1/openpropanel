@@ -105,7 +105,7 @@ func run() error {
 	defer st.Close()
 	_ = st.DeleteExpiredSessions()
 
-	if err := ensureAdmin(cfg, st); err != nil {
+	if err := ensureAdmin(cfg, st, *cfgPath); err != nil {
 		return err
 	}
 
@@ -145,8 +145,10 @@ func run() error {
 }
 
 // ensureAdmin creates a default admin account on first run and surfaces the
-// generated password both on stdout and in a 0600 file in the data directory.
-func ensureAdmin(cfg *config.Config, st *store.Store) error {
+// generated bootstrap password both on stdout and in a 0600 file in the data
+// directory. It also flags SetupPending so the first login runs the setup
+// wizard (choose your own username + password).
+func ensureAdmin(cfg *config.Config, st *store.Store, cfgPath string) error {
 	n, err := st.CountUsers()
 	if err != nil {
 		return err
@@ -179,8 +181,12 @@ func ensureAdmin(cfg *config.Config, st *store.Store) error {
 	credFile := filepath.Join(cfg.DataDir, "initial-admin-password.txt")
 	_ = os.WriteFile(credFile, []byte("username: "+username+"\npassword: "+pw+"\n"), 0o600)
 
+	// First login must run the setup wizard (pick a real username + password).
+	cfg.MarkSetupPending()
+	_ = cfg.Save(cfgPath)
+
 	line := "──────────────────────────────────────────────────────"
-	log.Printf("\n%s\n  Open ProPanel first-run: admin account created\n    username: %s\n    password: %s\n  (also saved to %s)\n  Log in and change the password right away.\n%s", line, username, pw, credFile, line)
+	log.Printf("\n%s\n  Open ProPanel first-run: admin account created\n    username: %s\n    password: %s\n  (also saved to %s)\n  Log in with these; you'll set your own username + password.\n%s", line, username, pw, credFile, line)
 	return nil
 }
 

@@ -69,6 +69,8 @@ func (s *Server) Handler() http.Handler {
 	app.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 	})
+	app.HandleFunc("GET /setup", s.getSetup)
+	app.HandleFunc("POST /setup", s.postSetup)
 	app.HandleFunc("GET /dashboard", s.getDashboard)
 	app.HandleFunc("GET /dashboard/stats", s.getStats)
 	app.HandleFunc("POST /services/{unit}/{action}", s.postService)
@@ -118,7 +120,7 @@ func (s *Server) Handler() http.Handler {
 	app.Handle("POST /settings/panel-cert", auth.RequireAdmin(http.HandlerFunc(s.postPanelCert)))
 	app.Handle("POST /settings/webserver", auth.RequireAdmin(http.HandlerFunc(s.postWebServer)))
 
-	mux.Handle("/", s.auth.Middleware(app))
+	mux.Handle("/", s.auth.Middleware(s.setupGate(app)))
 
 	return logMiddleware(securityHeaders(auth.SameOrigin(mux)))
 }

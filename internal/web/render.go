@@ -105,17 +105,20 @@ func newRenderer() (*renderer, error) {
 		r.roots[p] = "layout.html"
 	}
 
-	// Login is a standalone full page (no app shell / sidebar).
-	loginClone, err := base.Clone()
-	if err != nil {
-		return nil, err
+	// Login and the first-login setup wizard are standalone full pages (no app
+	// shell / sidebar).
+	for _, p := range []string{"login", "setup"} {
+		clone, err := base.Clone()
+		if err != nil {
+			return nil, err
+		}
+		t, err := clone.ParseFS(templatesFS, "templates/"+p+".html")
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", p, err)
+		}
+		r.pages[p] = t
+		r.roots[p] = p + ".html"
 	}
-	loginT, err := loginClone.ParseFS(templatesFS, "templates/login.html")
-	if err != nil {
-		return nil, err
-	}
-	r.pages["login"] = loginT
-	r.roots["login"] = "login.html"
 
 	return r, nil
 }

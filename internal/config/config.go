@@ -76,13 +76,18 @@ type Config struct {
 	// SessionKey signs session cookies. Generated on first run if empty.
 	SessionKey string `json:"session_key"`
 
+	// SetupPending is true from first run (the initial admin is created with a
+	// random bootstrap password) until the operator completes the first-login
+	// setup wizard, where they choose their own username + password. Guarded by mu.
+	SetupPending bool `json:"setup_pending,omitempty"`
+
 	// Dev is true when running on a non-production/non-Linux host. In dev mode
 	// system-mutating actions are simulated rather than executed.
 	Dev bool `json:"-"`
 
 	// mu guards the fields mutated at runtime (WebServer, TLSCert, TLSKey,
-	// PanelHostname) against concurrent request-path readers. Access those
-	// fields only through the accessor methods below.
+	// PanelHostname, SetupPending) against concurrent request-path readers.
+	// Access those fields only through the accessor methods below.
 	mu sync.RWMutex
 }
 
@@ -173,6 +178,27 @@ func (c *Config) SetWebServer(v string) {
 
 // UseNginx reports whether Nginx is the active web server.
 func (c *Config) UseNginx() bool { return c.WebServerName() == "nginx" }
+
+// SetupRequired reports whether the first-login setup wizard must still run.
+func (c *Config) SetupRequired() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.SetupPending
+}
+
+// MarkSetupPending flags that the first-login setup wizard should run.
+func (c *Config) MarkSetupPending() {
+	c.mu.Lock()
+	c.SetupPending = true
+	c.mu.Unlock()
+}
+
+// ClearSetupPending records that the first-login setup wizard has completed.
+func (c *Config) ClearSetupPending() {
+	c.mu.Lock()
+	c.SetupPending = false
+	c.mu.Unlock()
+}
 
 // ActiveWebService is the systemd unit name of the active web server.
 func (c *Config) ActiveWebService() string {
