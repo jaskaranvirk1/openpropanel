@@ -35,6 +35,17 @@ type Manager struct {
 // New constructs a Manager.
 func New(cfg *config.Config) *Manager { return &Manager{cfg: cfg} }
 
+// Available reports whether the local MariaDB server is reachable, so the UI
+// can show a friendly "install MariaDB" state instead of failing an operation.
+// In dev it is always true (the DB is stubbed); on a real host it checks that
+// the mariadb service is active.
+func (m *Manager) Available(ctx context.Context) bool {
+	if m.cfg.Dev {
+		return true
+	}
+	return system.ServiceActive(ctx, "mariadb")
+}
+
 // sessionPrologue pins the SQL parsing mode and connection charset for every
 // script so that string-literal escaping is deterministic regardless of the
 // server's global configuration:

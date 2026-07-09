@@ -43,10 +43,18 @@ func newCertManager(cfg *config.Config) *certManager { return &certManager{cfg: 
 // resolvePaths returns the cert/key files to serve right now: the override if
 // it is fully present, otherwise the self-signed fallback.
 func (cm *certManager) resolvePaths() (cert, key string) {
+	// 1. Operator override configured via Settings (Let's Encrypt / BYO cert).
 	oc, ok := cm.cfg.TLSOverride()
 	if oc != "" && ok != "" && fileExists(oc) && fileExists(ok) {
 		return oc, ok
 	}
+	// 2. Cockpit-style drop-in: panel.crt + panel.key in the cert dir.
+	dc := filepath.Join(cm.cfg.CertDir(), "panel.crt")
+	dk := filepath.Join(cm.cfg.CertDir(), "panel.key")
+	if fileExists(dc) && fileExists(dk) {
+		return dc, dk
+	}
+	// 3. Self-signed fallback.
 	return cm.cfg.SelfSignedCertPath(), cm.cfg.SelfSignedKeyPath()
 }
 
@@ -75,22 +83,34 @@ func (cm *certManager) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, e
 
 	pair, err := tls.LoadX509KeyPair(cert, key)
 	if err != nil {
-		// Any load failure — a missing/corrupt override cert, or a deleted
-		// self-signed one — regenerates the self-signed fallback so the panel is
-		// never left unreachable.
+		// The resolved cert (a malformed drop-in / override, or a deleted
+		// self-signed one) failed to load. Fall back to self-signed, generating
+		// it ONLY if it is not already on disk — never regenerate per handshake.
 		selfCert, selfKey := cm.cfg.SelfSignedCertPath(), cm.cfg.SelfSignedKeyPath()
-		if gerr := generateSelfSigned(selfCert, selfKey); gerr != nil {
-			return nil, fmt.Errorf("load %s failed (%v) and self-signed regeneration failed: %w", cert, err, gerr)
+		if !(fileExists(selfCert) && fileExists(selfKey)) {
+			if gerr := generateSelfSigned(selfCert, selfKey); gerr != nil {
+				return nil, fmt.Errorf("load %s failed (%v) and self-signed generation failed: %w", cert, err, gerr)
+			}
 		}
-		cert, key = selfCert, selfKey
-		if pair, err = tls.LoadX509KeyPair(cert, key); err != nil {
-			return nil, err
+		if pair, err = tls.LoadX509KeyPair(selfCert, selfKey); err != nil {
+			// The self-signed pair is itself broken — regenerate once and retry.
+			if gerr := generateSelfSigned(selfCert, selfKey); gerr != nil {
+				return nil, fmt.Errorf("self-signed regeneration failed: %w", gerr)
+			}
+			if pair, err = tls.LoadX509KeyPair(selfCert, selfKey); err != nil {
+				return nil, err
+			}
 		}
 	}
 
 	cm.cached = &pair
+	// Key the cache by the RESOLVED paths + modtimes even when we fell back to
+	// self-signed, so a bad drop-in/override cert is served from cache rather
+	// than reloaded (and regenerated) on every single TLS handshake. When the
+	// operator fixes or removes the file, its modtime/path changes and the cache
+	// misses, re-loading the corrected cert.
 	cm.curCert, cm.curKey = cert, key
-	cm.modCert, cm.modKey = modTime(cert), modTime(key)
+	cm.modCert, cm.modKey = mc, mk
 	return cm.cached, nil
 }
 

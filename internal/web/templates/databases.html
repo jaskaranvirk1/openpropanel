@@ -6,7 +6,8 @@
     <h1 class="text-lg font-semibold text-white">Databases</h1>
     <p class="text-sm text-slate-400">MariaDB databases and users. Names are prefixed with the owner's account name.</p>
   </div>
-  {{/* phpMyAdmin: open when installed; admins can install it in place. */}}
+  {{/* phpMyAdmin: open when installed; admins can install it in place. Only shown when MariaDB is up. */}}
+  {{if .Data.MariaDBUp}}
   {{if .Data.PMAInstalled}}
     <a href="/phpmyadmin/" target="_blank" rel="noopener"
        class="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-slate-900/40 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-white/5 transition-colors">
@@ -22,8 +23,19 @@
       </button>
     </form>
   {{end}}
+  {{end}}
 </div>
 
+{{if not .Data.MariaDBUp}}
+<div class="mb-6 rounded-2xl border border-amber-500/20 bg-amber-500/5 p-5 text-sm text-amber-200">
+  <p class="font-medium">MariaDB isn't installed or isn't running.</p>
+  <p class="mt-1 text-amber-200/80">Databases and phpMyAdmin need it. On the server, run:</p>
+  <pre class="mt-2 overflow-x-auto rounded-lg bg-slate-950/60 px-3 py-2 font-mono text-xs text-slate-200">dnf install -y mariadb-server &amp;&amp; systemctl enable --now mariadb</pre>
+  <p class="mt-2 text-amber-200/80">Then reload this page — the tools below will light up.</p>
+</div>
+{{end}}
+
+{{if .Data.MariaDBUp}}
 <div class="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
   {{/* Create database */}}
   <div class="rounded-2xl border border-white/5 bg-slate-900/40 p-5">
@@ -72,6 +84,8 @@
     </form>
   </div>
 </div>
+
+{{end}}
 
 {{/* Databases list */}}
 <h2 class="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Databases</h2>

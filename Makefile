@@ -15,7 +15,7 @@ help:
 	@echo "  make css          Build Tailwind CSS -> $(CSS_OUT)"
 	@echo "  make build        Cross-compile static linux/amd64 binary (for the server)"
 	@echo "  make build-local  Build for the current host (development)"
-	@echo "  make run          Build + run locally in dev mode on :2087"
+	@echo "  make run          Build + run locally in dev mode on :9443"
 	@echo "  make rpm          Build an installable .rpm (needs rpmbuild)"
 	@echo "  make install      Install on this AlmaLinux host (needs root)"
 
@@ -31,7 +31,7 @@ build-local: css
 	go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) $(PKG)
 
 run: build-local
-	./bin/$(BINARY) -listen :2087
+	./bin/$(BINARY) -listen :9443
 
 tidy:
 	go mod tidy

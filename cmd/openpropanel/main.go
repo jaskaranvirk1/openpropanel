@@ -19,6 +19,7 @@ import (
 	"github.com/openpropanel/openpropanel/internal/apache"
 	"github.com/openpropanel/openpropanel/internal/auth"
 	"github.com/openpropanel/openpropanel/internal/config"
+	"github.com/openpropanel/openpropanel/internal/doctor"
 	"github.com/openpropanel/openpropanel/internal/domains"
 	"github.com/openpropanel/openpropanel/internal/mariadb"
 	"github.com/openpropanel/openpropanel/internal/nginx"
@@ -46,7 +47,7 @@ func run() error {
 		defaultCfg = filepath.Join("data", "config.json")
 	}
 	cfgPath := flag.String("config", defaultCfg, "path to config JSON file")
-	listen := flag.String("listen", "", "override listen address (e.g. :2087)")
+	listen := flag.String("listen", "", "override listen address (e.g. :9443)")
 	tlsFlag := flag.String("tls", "", "override TLS: 'on' or 'off'")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -59,6 +60,11 @@ func run() error {
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+
+	// `openpropanel doctor` — environment health check, then exit.
+	if flag.Arg(0) == "doctor" {
+		os.Exit(doctor.Run(cfg, *cfgPath))
 	}
 	if *listen != "" {
 		cfg.ListenAddr = *listen

@@ -13,14 +13,15 @@
 #   PROPANEL_VERSION   release tag to install (default: latest)
 #   PROPANEL_REPO      GitHub owner/repo (default: jaskaranvirk1/openpropanel)
 #   PROPANEL_BASE_URL  download binaries from this base URL instead of GitHub
-#   PANEL_PORT         panel port (default: 2087)
+#   PANEL_PORT         panel port (default: 9443)
+#   PROPANEL_OPEN      panel-port firewall exposure: all (default) | ip | none
 
 set -euo pipefail
 
 REPO="${PROPANEL_REPO:-jaskaranvirk1/openpropanel}"
 VERSION="${PROPANEL_VERSION:-latest}"
 BASE_URL="${PROPANEL_BASE_URL:-}"
-PANEL_PORT="${PANEL_PORT:-2087}"
+PANEL_PORT="${PANEL_PORT:-9443}"
 BIN_DEST="/usr/local/bin/openpropanel"
 CONF_DIR="/etc/openpropanel"
 UNIT_DEST="/etc/systemd/system/openpropanel.service"
@@ -91,8 +92,12 @@ tar -xzf "$TMP/${ASSET}" -C "$TMP"
 # by an exclude= rule (e.g. PHP provided via the Remi module) and never
 # reinstalls something the server already has.
 if [ -n "$PKG" ]; then
+    # MariaDB is installed by default so the Databases + phpMyAdmin features work
+    # out of the box; set PROPANEL_NO_DB=1 to skip it (add it later anytime).
+    REQUIRED="httpd mod_ssl php-fpm certbot firewalld"
+    [ "${PROPANEL_NO_DB:-0}" = "1" ] || REQUIRED="$REQUIRED mariadb-server"
     missing=""
-    for pkg in httpd mod_ssl php-fpm certbot firewalld; do
+    for pkg in $REQUIRED; do
         rpm -q "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
     done
     missing="$(echo $missing)" # trim
@@ -107,6 +112,9 @@ if [ -n "$PKG" ]; then
     for svc in php-fpm httpd firewalld; do
         systemctl enable --now "$svc" >/dev/null 2>&1 || true
     done
+    if [ "${PROPANEL_NO_DB:-0}" != "1" ]; then
+        systemctl enable --now mariadb >/dev/null 2>&1 || warn "MariaDB installed but not started — check: systemctl status mariadb"
+    fi
 fi
 
 # --- install binary + unit ---------------------------------------------------
@@ -143,15 +151,52 @@ if [ ! -f "$CONF_DIR/config.json" ]; then
     printf '{\n  "listen_addr": ":%s",\n  "acme_email": ""\n}\n' "$PANEL_PORT" > "$CONF_DIR/config.json"
     chmod 600 "$CONF_DIR/config.json"
 fi
+# Cockpit-style TLS drop-in: put panel.crt + panel.key here to serve a real cert.
+mkdir -p "$CONF_DIR/certs"
+chmod 700 "$CONF_DIR/certs"
 
 # --- firewall + SELinux ------------------------------------------------------
-# Open http/https (needed for hosted sites + Let's Encrypt) but DO NOT expose the
-# root-privileged panel port to the whole internet — the admin restricts it to
-# their own IP (instructions printed at the end).
+# Open http/https (needed for hosted sites + Let's Encrypt). The root-privileged
+# panel port stays CLOSED by default — reach it via an SSH tunnel. Override with
+# PROPANEL_OPEN=ip (only the IP you're connecting from) or PROPANEL_OPEN=all.
 if command -v firewall-cmd >/dev/null 2>&1; then
-    log "Opening firewall (http, https)"
+    log "Configuring firewall"
+    # Named firewalld service so the port can also be managed with:
+    #   firewall-cmd --add-service=openpropanel
+    if [ -d /etc/firewalld/services ]; then
+        cat > /etc/firewalld/services/openpropanel.xml <<XML
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>Open ProPanel</short>
+  <description>Open ProPanel web control panel.</description>
+  <port protocol="tcp" port="${PANEL_PORT}"/>
+</service>
+XML
+    fi
     firewall-cmd --add-service=http  --permanent >/dev/null 2>&1 || true
     firewall-cmd --add-service=https --permanent >/dev/null 2>&1 || true
+    # PROPANEL_OPEN: all (default) opens the panel port to the internet so it is
+    # reachable from anywhere; ip restricts it to your SSH client IP; none keeps
+    # it closed (reach it via an SSH tunnel).
+    case "${PROPANEL_OPEN:-all}" in
+        none|closed)
+            log "Panel port ${PANEL_PORT} left CLOSED (PROPANEL_OPEN=none) — reach it via an SSH tunnel"
+            ;;
+        ip|ssh|ssh-ip)
+            ipsrc="$(echo "${SSH_CONNECTION:-}" | awk '{print $1}')"
+            [ -z "$ipsrc" ] && ipsrc="$(echo "${SSH_CLIENT:-}" | awk '{print $1}')"
+            if [ -n "$ipsrc" ]; then
+                log "Opening panel port ${PANEL_PORT} to your IP only (${ipsrc})"
+                firewall-cmd --permanent --add-rich-rule="rule family=ipv4 source address=${ipsrc}/32 port port=${PANEL_PORT} protocol=tcp accept" >/dev/null 2>&1 || true
+            else
+                warn "PROPANEL_OPEN=ip but couldn't detect your SSH client IP (sudo may strip it) — leaving ${PANEL_PORT} CLOSED; open it manually or re-run as root without sudo"
+            fi
+            ;;
+        *)
+            log "Opening panel port ${PANEL_PORT} to the internet (reachable from anywhere)"
+            firewall-cmd --add-port="${PANEL_PORT}/tcp" --permanent >/dev/null 2>&1 || true
+            ;;
+    esac
     firewall-cmd --reload >/dev/null 2>&1 || true
 fi
 if command -v restorecon >/dev/null 2>&1; then
@@ -164,33 +209,37 @@ systemctl daemon-reload
 systemctl enable --now openpropanel
 
 # Wait for first-run to generate the random admin credentials, then read them.
+# The reads are guarded with '|| true' so a slow/failed first boot (creds file
+# not yet written) can never abort the installer under 'set -e' — the banner and
+# its ${VAR:-fallback} messages must always print.
 CREDS="/var/lib/openpropanel/initial-admin-password.txt"
-for _ in $(seq 1 20); do [ -s "$CREDS" ] && break; sleep 0.5; done
-USERNAME="$(awk -F': ' '/^username:/{print $2}' "$CREDS" 2>/dev/null)"
-PASSWORD="$(awk -F': ' '/^password:/{print $2}' "$CREDS" 2>/dev/null)"
-
-LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+for _ in $(seq 1 30); do [ -s "$CREDS" ] && break; sleep 0.5; done
+USERNAME="$(awk -F': ' '/^username:/{print $2}' "$CREDS" 2>/dev/null || true)"
+PASSWORD="$(awk -F': ' '/^password:/{print $2}' "$CREDS" 2>/dev/null || true)"
 PUB_IP="$(curl -fsS --max-time 4 https://api.ipify.org 2>/dev/null || curl -fsS --max-time 4 https://ifconfig.me 2>/dev/null || true)"
-VER="$("$BIN_DEST" --version 2>/dev/null | awk '{print $2}')"
+VER="$("$BIN_DEST" --version 2>/dev/null | awk '{print $2}' || true)"
+
+# Preflight health check so any environment problem is visible right away.
+echo
+"$BIN_DEST" doctor 2>/dev/null || true
 
 echo
 echo "=================================================================="
-echo " Open ProPanel ${VER} installed successfully!"
+echo "  Open ProPanel ${VER} is installed and running."
 echo "=================================================================="
-[ -n "$PUB_IP" ] && echo " Panel URL (external): https://${PUB_IP}:${PANEL_PORT}"
-[ -n "$LAN_IP" ] && echo " Panel URL (internal): https://${LAN_IP}:${PANEL_PORT}"
-echo " Username:             ${USERNAME:-admin}"
-echo " Password:             ${PASSWORD:-see: journalctl -u openpropanel}"
-echo "=================================================================="
-echo " * Opened by IP, the panel uses a self-signed cert (Let's Encrypt can't"
-echo "   issue for bare IPs) — accept the browser warning. Point a domain at it"
-echo "   and get a free Let's Encrypt cert under Settings -> Panel HTTPS."
-echo "   (Your hosted sites always get Let's Encrypt certificates.)"
-echo " * You can change the username/password after logging in."
-echo " * The panel port ${PANEL_PORT} is NOT open in the firewall (it runs as root)."
-echo "   Open it only to YOUR IP:"
-echo "     firewall-cmd --permanent --add-rich-rule='rule family=ipv4 \\"
-echo "       source address=YOUR.IP/32 port port=${PANEL_PORT} protocol=tcp accept'"
-echo "     firewall-cmd --reload"
+echo "  Access from anywhere:"
+[ -n "$PUB_IP" ] && echo "     https://${PUB_IP}:${PANEL_PORT}" || echo "     https://<server-ip>:${PANEL_PORT}"
+echo
+echo "  Username:  ${USERNAME:-admin}"
+echo "  Password:  ${PASSWORD:-see: journalctl -u openpropanel  (or ${CREDS})}"
+echo "  (Change the password right after your first login.)"
+echo "------------------------------------------------------------------"
+echo "  * HTTPS is self-signed by default — your browser will warn once;"
+echo "    click through to continue. For a trusted padlock: point a domain"
+echo "    here and use Settings -> Panel HTTPS, or drop panel.crt + panel.key"
+echo "    into ${CONF_DIR}/certs/."
+echo "  * The panel port ${PANEL_PORT} is open to the internet. To restrict it to"
+echo "    your IP later:  firewall-cmd --permanent --remove-port=${PANEL_PORT}/tcp &&"
+echo "    firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=YOUR.IP/32 port port=${PANEL_PORT} protocol=tcp accept' && firewall-cmd --reload"
 echo "=================================================================="
 echo

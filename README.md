@@ -67,10 +67,10 @@ host).
 
 ```bash
 # build the CSS and a host binary, then run
-make run                 # -> http://localhost:2087
+make run                 # -> http://localhost:9443
 # ...or without make:
 npx tailwindcss@3 -i css/input.css -o internal/web/static/app.css --minify
-go run ./cmd/openpropanel -listen :2087
+go run ./cmd/openpropanel -listen :9443
 ```
 
 The first run prints an `admin` password (also saved to
@@ -103,11 +103,14 @@ make install            # cross-builds the binary, installs deps + service
 ```
 
 Either way the installer drops the binary at `/usr/local/bin/openpropanel`, installs
-the systemd unit, opens the firewall (80, 443, 2087), and starts the service.
+the systemd unit, installs the runtime deps (incl. MariaDB), opens the firewall
+(80, 443, and the panel port **9443**), runs a `doctor` health check, and starts
+the service.
 
-Get the first-run admin password from `journalctl -u openpropanel` or
-`/var/lib/openpropanel/initial-admin-password.txt`, then browse to
-`http://<server-ip>:2087`.
+The installer prints the generated admin username/password and the URL. Browse to
+`https://<server-ip>:9443` from anywhere (accept the self-signed-cert warning),
+then change the password. The password is also in `journalctl -u openpropanel`
+and `/var/lib/openpropanel/initial-admin-password.txt`.
 
 ## Configuration
 
@@ -115,7 +118,7 @@ Get the first-run admin password from `journalctl -u openpropanel` or
 
 ```json
 {
-  "listen_addr": ":2087",
+  "listen_addr": ":9443",
   "web_root": "/var/www",
   "apache_vhost_dir": "/etc/httpd/conf.d",
   "php_fpm_conf_dir": "/etc/php-fpm.d",
@@ -147,9 +150,12 @@ real, browser-trusted certificate two ways:
 ## Security notes — read before exposing it
 
 - The service runs **privileged** (it edits system config and controls
-  services). Treat access to it as equivalent to root on the box — keep port
-  2087 firewalled to trusted IPs even though it is HTTPS.
-- Change the generated admin password immediately.
+  services). Treat access to it as equivalent to root on the box.
+- The panel port (**9443**) is opened to the internet by default so you can reach
+  it from anywhere (like Cockpit/aaPanel). If you don't need that, restrict it to
+  trusted IPs — install with `PROPANEL_OPEN=ip` (your IP only) or `PROPANEL_OPEN=none`
+  (closed; reach it via an SSH tunnel), or add a firewalld rich-rule later.
+- Change the generated admin password immediately. Login is rate-limited.
 - Use a real certificate (above) before relying on it over the public internet.
 
 ## Building & releasing

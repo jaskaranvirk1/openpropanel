@@ -60,7 +60,7 @@ install -d -m 0755 %{buildroot}%{_sysconfdir}/openpropanel
 if [ $1 -eq 1 ]; then
     # First install: create a default config if none exists.
     if [ ! -f %{_sysconfdir}/openpropanel/config.json ]; then
-        printf '{\n  "listen_addr": ":2087",\n  "acme_email": ""\n}\n' \
+        printf '{\n  "listen_addr": ":9443",\n  "acme_email": ""\n}\n' \
             > %{_sysconfdir}/openpropanel/config.json
         chmod 600 %{_sysconfdir}/openpropanel/config.json
     fi

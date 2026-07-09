@@ -17,8 +17,9 @@ import (
 
 // Config is the fully-resolved configuration used across the application.
 type Config struct {
-	// ListenAddr is the address the web UI binds to. cPanel/WHM historically
-	// use 2087 for the admin HTTPS interface; we default to it.
+	// ListenAddr is the address the web UI binds to. We default to :9443 — an
+	// easy-to-remember HTTPS-style port that avoids the common control-panel
+	// ports (2087 WHM, 9090 Cockpit, 8888 aaPanel, 10000 Webmin).
 	ListenAddr string `json:"listen_addr"`
 
 	// DataDir holds the SQLite database and other panel state.
@@ -89,7 +90,7 @@ type Config struct {
 // self-contained local layout when not running on Linux.
 func Default() *Config {
 	c := &Config{
-		ListenAddr:      ":2087",
+		ListenAddr:      ":9443",
 		DataDir:         "/var/lib/openpropanel",
 		WebRoot:         "/var/www",
 		WebServer:       "apache",
@@ -134,6 +135,16 @@ func Default() *Config {
 // self-signed certificate lives when no override cert is configured.
 func (c *Config) SelfSignedCertPath() string { return filepath.Join(c.DataDir, "tls", "cert.pem") }
 func (c *Config) SelfSignedKeyPath() string  { return filepath.Join(c.DataDir, "tls", "key.pem") }
+
+// CertDir is a Cockpit-style drop-in directory for the panel's own TLS cert:
+// place panel.crt + panel.key there and the panel serves them automatically
+// (no config edit), taking precedence over the self-signed fallback.
+func (c *Config) CertDir() string {
+	if c.Dev {
+		return filepath.Join(c.DataDir, "certs")
+	}
+	return "/etc/openpropanel/certs"
+}
 
 // PhpMyAdminDir is where the phpMyAdmin app files live.
 func (c *Config) PhpMyAdminDir() string { return filepath.Join(c.PMARoot, "phpmyadmin") }

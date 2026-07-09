@@ -37,6 +37,7 @@ type databasesVM struct {
 	IsAdmin      bool
 	Users        []*store.User
 	PMAInstalled bool
+	MariaDBUp    bool
 }
 
 // ---------------------------------------------------------------------------
@@ -104,7 +105,10 @@ func (s *Server) getDatabases(w http.ResponseWriter, r *http.Request) {
 		userRows = append(userRows, dbUserRow{User: du, OwnerName: names[du.UserID]})
 	}
 
-	vm := databasesVM{Databases: rows, DBUsers: userRows, IsAdmin: isAdmin, PMAInstalled: s.pma.Installed()}
+	vm := databasesVM{
+		Databases: rows, DBUsers: userRows, IsAdmin: isAdmin,
+		PMAInstalled: s.pma.Installed(), MariaDBUp: s.mariadb.Available(r.Context()),
+	}
 	if isAdmin {
 		vm.Users, _ = s.store.ListUsers()
 	}
