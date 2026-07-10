@@ -67,6 +67,8 @@ type Site struct {
 	DocRoot    string
 	PHPVersion string
 	SSLEnabled bool
+	CertFile   string // TLS cert path when custom (adopted sites); "" = panel-managed Let's Encrypt path
+	KeyFile    string // TLS key path when custom; "" = panel-managed
 	Source     string // SourceManaged | SourceImported
 	ConfFile   string // original config path (for imported sites)
 	RepoID     sql.NullInt64 // linked GitHub repo (project), if any
@@ -157,6 +159,8 @@ CREATE TABLE IF NOT EXISTS sites (
     repo_id     INTEGER,
     repo_subdir TEXT NOT NULL DEFAULT '',
     web_mode    TEXT NOT NULL DEFAULT 'php',
+    cert_file   TEXT NOT NULL DEFAULT '',
+    key_file    TEXT NOT NULL DEFAULT '',
     created_at  INTEGER NOT NULL
 );
 
@@ -228,6 +232,8 @@ CREATE INDEX IF NOT EXISTS idx_dbusers_user ON db_users(user_id);
 		`ALTER TABLE sites ADD COLUMN repo_id INTEGER`,
 		`ALTER TABLE sites ADD COLUMN repo_subdir TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sites ADD COLUMN web_mode TEXT NOT NULL DEFAULT 'php'`,
+		`ALTER TABLE sites ADD COLUMN cert_file TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sites ADD COLUMN key_file TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := s.db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
@@ -360,13 +366,13 @@ func (s *Store) CountBySystemUser(name string) (int, error) {
 // Sites
 // ---------------------------------------------------------------------------
 
-const siteCols = `id, user_id, domain, type, parent_id, doc_root, php_version, ssl_enabled, source, conf_file, repo_id, repo_subdir, web_mode, created_at`
+const siteCols = `id, user_id, domain, type, parent_id, doc_root, php_version, ssl_enabled, source, conf_file, repo_id, repo_subdir, web_mode, cert_file, key_file, created_at`
 
 func scanSite(row interface{ Scan(...any) error }) (*Site, error) {
 	var st Site
 	var created int64
 	var ssl int
-	err := row.Scan(&st.ID, &st.UserID, &st.Domain, &st.Type, &st.ParentID, &st.DocRoot, &st.PHPVersion, &ssl, &st.Source, &st.ConfFile, &st.RepoID, &st.RepoSubdir, &st.WebMode, &created)
+	err := row.Scan(&st.ID, &st.UserID, &st.Domain, &st.Type, &st.ParentID, &st.DocRoot, &st.PHPVersion, &ssl, &st.Source, &st.ConfFile, &st.RepoID, &st.RepoSubdir, &st.WebMode, &st.CertFile, &st.KeyFile, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -392,9 +398,9 @@ func (s *Store) CreateSite(st *Site) (*Site, error) {
 		st.Source = SourceManaged
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO sites (user_id, domain, type, parent_id, doc_root, php_version, ssl_enabled, source, conf_file, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		st.UserID, st.Domain, st.Type, st.ParentID, st.DocRoot, st.PHPVersion, ssl, st.Source, st.ConfFile, now.Unix(),
+		`INSERT INTO sites (user_id, domain, type, parent_id, doc_root, php_version, ssl_enabled, source, conf_file, cert_file, key_file, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		st.UserID, st.Domain, st.Type, st.ParentID, st.DocRoot, st.PHPVersion, ssl, st.Source, st.ConfFile, st.CertFile, st.KeyFile, now.Unix(),
 	)
 	if err != nil {
 		return nil, err
@@ -476,6 +482,13 @@ func (s *Store) SetSiteSSL(id int64, enabled bool) error {
 		v = 1
 	}
 	_, err := s.db.Exec(`UPDATE sites SET ssl_enabled = ? WHERE id = ?`, v, id)
+	return err
+}
+
+// SetSiteCerts records a site's TLS certificate paths ("" = panel-managed
+// Let's Encrypt paths, which renderVHost derives from the domain).
+func (s *Store) SetSiteCerts(id int64, certFile, keyFile string) error {
+	_, err := s.db.Exec(`UPDATE sites SET cert_file = ?, key_file = ? WHERE id = ?`, certFile, keyFile, id)
 	return err
 }
 

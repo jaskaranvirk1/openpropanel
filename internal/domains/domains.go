@@ -360,10 +360,17 @@ func (s *Service) EnableSSL(ctx context.Context, id int64) error {
 		return fmt.Errorf("certificate issuance failed: %w", err)
 	}
 	site.SSLEnabled = true
+	// certbot issued a Let's Encrypt cert, so the panel now owns it: clear any
+	// custom cert paths (e.g. inherited from adoption) and fall back to the
+	// panel-managed LE paths in renderVHost.
+	site.CertFile, site.KeyFile = "", ""
 	if err := s.renderVHost(site); err != nil {
 		return err
 	}
 	if err := s.web().Apply(ctx); err != nil {
+		return err
+	}
+	if err := s.store.SetSiteCerts(id, "", ""); err != nil {
 		return err
 	}
 	return s.store.SetSiteSSL(id, true)
@@ -641,7 +648,8 @@ func (s *Service) ImportExisting(ctx context.Context) (int, error) {
 	create := func(d vhostscan.Site, typ string, parent sql.NullInt64) {
 		if _, err := s.store.CreateSite(&store.Site{
 			UserID: admin.ID, Domain: d.Domain, Type: typ, ParentID: parent,
-			DocRoot: d.DocRoot, SSLEnabled: d.SSL, Source: store.SourceImported, ConfFile: d.File,
+			DocRoot: d.DocRoot, SSLEnabled: d.SSL, CertFile: d.CertFile, KeyFile: d.KeyFile,
+			Source: store.SourceImported, ConfFile: d.File,
 		}); err == nil {
 			n++
 		}
@@ -680,6 +688,23 @@ func (s *Service) ImportExisting(ctx context.Context) (int, error) {
 			}
 			if parent, perr := s.store.SiteByDomain(pd); perr == nil && parent.ID != st.ID {
 				_ = s.store.SetSiteParent(st.ID, parent.ID)
+			}
+		}
+	}
+
+	// Prune: drop IMPORTED sites whose backing vhost has disappeared from disk
+	// (e.g. the operator deleted the .conf and reloaded). Only imported rows are
+	// removed — never managed/adopted sites the panel is responsible for. A
+	// still-present child cascaded away by pruning its parent is re-imported on
+	// the next scan.
+	onDisk := map[string]bool{}
+	for _, d := range found {
+		onDisk[d.Domain] = true
+	}
+	if existing, e := s.store.ListSites(); e == nil {
+		for _, st := range existing {
+			if st.Source == store.SourceImported && !onDisk[st.Domain] {
+				_ = s.store.DeleteSite(st.ID)
 			}
 		}
 	}
@@ -839,7 +864,13 @@ func (s *Service) renderVHost(site *store.Site) error {
 		vh.ServerAlias = "www." + site.Domain
 	}
 	if site.SSLEnabled {
-		vh.CertFile, vh.KeyFile = s.ssl.CertPaths(site.Domain)
+		// Preserve a custom certificate (e.g. an adopted site using its own cert)
+		// rather than forcing the panel's Let's Encrypt paths, which may not exist.
+		if site.CertFile != "" && site.KeyFile != "" {
+			vh.CertFile, vh.KeyFile = site.CertFile, site.KeyFile
+		} else {
+			vh.CertFile, vh.KeyFile = s.ssl.CertPaths(site.Domain)
+		}
 	}
 	return s.web().Write(vh)
 }

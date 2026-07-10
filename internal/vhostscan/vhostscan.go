@@ -23,6 +23,8 @@ type Site struct {
 	Aliases []string // additional names
 	DocRoot string   // DocumentRoot / root ("" if none found)
 	SSL     bool     // an HTTPS/SSL block was present
+	CertFile string  // SSLCertificateFile / ssl_certificate path, if any
+	KeyFile  string  // SSLCertificateKeyFile / ssl_certificate_key path, if any
 	File    string   // config file it was found in
 	Managed bool      // the file carries the Open ProPanel marker
 }
@@ -33,10 +35,14 @@ var (
 	serverAliasRe = regexp.MustCompile(`(?im)^[ \t]*ServerAlias[ \t]+(.+)$`)
 	docRootRe     = regexp.MustCompile(`(?im)^[ \t]*DocumentRoot[ \t]+"?([^"\r\n]+?)"?[ \t]*$`)
 	apacheSSLRe   = regexp.MustCompile(`(?i)(SSLEngine\s+on|SSLCertificateFile)`)
+	apacheCertRe  = regexp.MustCompile(`(?im)^[ \t]*SSLCertificateFile[ \t]+"?([^"\r\n]+?)"?[ \t]*$`)
+	apacheKeyRe   = regexp.MustCompile(`(?im)^[ \t]*SSLCertificateKeyFile[ \t]+"?([^"\r\n]+?)"?[ \t]*$`)
 
-	ngxNameRe = regexp.MustCompile(`(?im)^[ \t]*server_name[ \t]+([^;{]+);`)
-	ngxRootRe = regexp.MustCompile(`(?im)^[ \t]*root[ \t]+([^;{]+);`)
-	ngxSSLRe  = regexp.MustCompile(`(?im)^[ \t]*(listen[ \t]+[^;]*\bssl\b|ssl_certificate[ \t])`)
+	ngxNameRe    = regexp.MustCompile(`(?im)^[ \t]*server_name[ \t]+([^;{]+);`)
+	ngxRootRe    = regexp.MustCompile(`(?im)^[ \t]*root[ \t]+([^;{]+);`)
+	ngxSSLRe     = regexp.MustCompile(`(?im)^[ \t]*(listen[ \t]+[^;]*\bssl\b|ssl_certificate[ \t])`)
+	ngxCertRe    = regexp.MustCompile(`(?im)^[ \t]*ssl_certificate[ \t]+([^;{]+);`)
+	ngxCertKeyRe = regexp.MustCompile(`(?im)^[ \t]*ssl_certificate_key[ \t]+([^;{]+);`)
 
 	hostRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*\.[a-z0-9.-]+$`)
 )
@@ -77,6 +83,15 @@ func scan(dir string, parse func(content, file string) []Site) ([]Site, error) {
 				}
 				if len(ex.Aliases) == 0 {
 					ex.Aliases = s.Aliases
+				}
+				// certbot splits a site into <domain>.conf (no cert) and
+				// <domain>-le-ssl.conf (the cert) — take the paths from whichever
+				// block carries them.
+				if ex.CertFile == "" {
+					ex.CertFile = s.CertFile
+				}
+				if ex.KeyFile == "" {
+					ex.KeyFile = s.KeyFile
 				}
 			} else {
 				cp := s
@@ -136,7 +151,8 @@ func parseApache(content, file string) []Site {
 		if !looksLikeDomain(name) {
 			continue
 		}
-		s := Site{Domain: name, File: file, DocRoot: cleanPath(firstSubmatch(docRootRe, block)), SSL: apacheSSLRe.MatchString(block)}
+		s := Site{Domain: name, File: file, DocRoot: cleanPath(firstSubmatch(docRootRe, block)), SSL: apacheSSLRe.MatchString(block),
+			CertFile: cleanPath(firstSubmatch(apacheCertRe, block)), KeyFile: cleanPath(firstSubmatch(apacheKeyRe, block))}
 		for _, am := range serverAliasRe.FindAllStringSubmatch(block, -1) {
 			for _, a := range strings.Fields(am[1]) {
 				if al := strings.ToLower(hostOnly(a)); looksLikeDomain(al) && al != name {
@@ -171,8 +187,10 @@ func parseNginx(content, file string) []Site {
 		}
 		sites = append(sites, Site{
 			Domain: domain, Aliases: aliases, File: file,
-			DocRoot: cleanPath(firstSubmatch(ngxRootRe, block)),
-			SSL:     ngxSSLRe.MatchString(block),
+			DocRoot:  cleanPath(firstSubmatch(ngxRootRe, block)),
+			SSL:      ngxSSLRe.MatchString(block),
+			CertFile: cleanPath(firstSubmatch(ngxCertRe, block)),
+			KeyFile:  cleanPath(firstSubmatch(ngxCertKeyRe, block)),
 		})
 	}
 	return sites
