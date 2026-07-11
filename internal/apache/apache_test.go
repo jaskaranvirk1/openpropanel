@@ -53,3 +53,20 @@ func TestApacheServingModes(t *testing.T) {
 		t.Error("static mode should index index.html")
 	}
 }
+
+// SymLinksIfOwnerMatch is the guard against a tenant symlinking their doc root
+// into another tenant's files; "AllowOverride All" would let a tenant
+// .htaccess re-enable FollowSymLinks and defeat it, so the override list must
+// be an allowlist that cannot grant FollowSymLinks.
+func TestApacheHtaccessCannotEnableFollowSymlinks(t *testing.T) {
+	out := renderApache(t, webserver.VHost{Domain: "x.com", DocRoot: "/srv/x", Mode: "php"})
+	if !strings.Contains(out, "Options -Indexes +SymLinksIfOwnerMatch") {
+		t.Error("directory options must require symlink owner match")
+	}
+	if strings.Contains(out, "AllowOverride All") {
+		t.Error("AllowOverride All lets .htaccess set Options +FollowSymLinks — must be an allowlist")
+	}
+	if !strings.Contains(out, "Options=Indexes,MultiViews,SymLinksIfOwnerMatch") {
+		t.Error("override allowlist should permit only symlink-safe Options")
+	}
+}

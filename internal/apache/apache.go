@@ -161,7 +161,12 @@ var vhostTmpl = template.Must(template.New("vhost").Parse(`# Managed by Open Pro
 {{- end}}
 {{define "apacheServe"}}    <Directory "{{.DocRoot}}">
         Options -Indexes +SymLinksIfOwnerMatch
-        AllowOverride All
+        {{- /* NOT "AllowOverride All": that would let a tenant .htaccess set
+             "Options +FollowSymLinks" and defeat SymLinksIfOwnerMatch, following
+             a tenant-owned symlink into another tenant's (or root's) files. The
+             Options= allowlist keeps common .htaccess use (WordPress/Laravel
+             rewrites via FileInfo, -Indexes/-MultiViews) working. */}}
+        AllowOverride AuthConfig FileInfo Indexes Limit Options=Indexes,MultiViews,SymLinksIfOwnerMatch
         Require all granted
 {{- if eq .Mode "spa"}}
         FallbackResource /index.html

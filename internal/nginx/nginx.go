@@ -99,6 +99,10 @@ server {
     listen [::]:80;
     server_name {{.Domain}}{{if .ServerAlias}} {{.ServerAlias}}{{end}};
     root {{.DocRoot}};
+    # Refuse symlinks whose owner differs from the link itself (mirrors Apache's
+    # SymLinksIfOwnerMatch): a tenant-owned symlink inside a doc root (e.g. a git
+    # checkout) must never make nginx serve another tenant's or root's files.
+    disable_symlinks if_not_owner;
 
     location ^~ /.well-known/acme-challenge/ {
         root {{.DocRoot}};
@@ -117,6 +121,7 @@ server {
     listen [::]:443 ssl;
     server_name {{.Domain}}{{if .ServerAlias}} {{.ServerAlias}}{{end}};
     root {{.DocRoot}};
+    disable_symlinks if_not_owner;
 
     ssl_certificate {{.CertFile}};
     ssl_certificate_key {{.KeyFile}};

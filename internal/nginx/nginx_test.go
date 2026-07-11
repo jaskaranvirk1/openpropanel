@@ -50,3 +50,19 @@ func TestNginxServingModes(t *testing.T) {
 		t.Error("static mode should not run PHP")
 	}
 }
+
+// A tenant-owned symlink inside a doc root (e.g. a git checkout swapped for a
+// link into another tenant's tree) must never be followed: both the :80 and
+// :443 server blocks need disable_symlinks (mirrors Apache's
+// SymLinksIfOwnerMatch).
+func TestNginxRefusesForeignSymlinks(t *testing.T) {
+	vh := webserver.VHost{Domain: "x.com", DocRoot: "/srv/x", Mode: "php", SSL: true, CertFile: "/c", KeyFile: "/k"}
+	out := renderNginx(t, vh)
+	if n := strings.Count(out, "disable_symlinks if_not_owner;"); n != 2 {
+		t.Errorf("want disable_symlinks if_not_owner in both server blocks, found %d", n)
+	}
+	plain := webserver.VHost{Domain: "x.com", DocRoot: "/srv/x", Mode: "php"}
+	if !strings.Contains(renderNginx(t, plain), "disable_symlinks if_not_owner;") {
+		t.Error("non-SSL server block must also disable foreign symlinks")
+	}
+}
