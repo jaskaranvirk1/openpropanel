@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	osuser "os/user"
@@ -47,7 +48,22 @@ type Service struct {
 
 	switchMu  sync.Mutex // serializes web-server switches
 	accountMu sync.Mutex // serializes account deletion (last-admin guard)
-	deployMu  sync.Mutex // serializes clone/deploy per process
+	tenantMu  sync.Mutex // serializes JIT system-user provisioning (ensureTenant)
+
+	jobMu sync.Mutex         // guards jobs
+	jobs  map[int64]*repoJob // background clone/deploy jobs, keyed by PROJECT site ID
+}
+
+// repoJob tracks one project's in-flight background work. Jobs are keyed by
+// project (not repo) because the contended resource is the project's checkout
+// directory — an unlink+relink mints a new repo ID but reuses the same dir, and
+// two concurrent git jobs there would corrupt it. next coalesces requests that
+// arrive while a job is running into exactly one follow-up executing the MOST
+// RECENT request (so a branch change arriving mid-deploy runs a full activate,
+// not a re-deploy that cannot fetch the new branch).
+type repoJob struct {
+	running bool
+	next    func(ctx context.Context)
 }
 
 // New wires the orchestrator.
@@ -126,6 +142,15 @@ func (s *Service) CreateSite(ctx context.Context, ownerID int64, rawDomain, phpL
 	owner, err := s.store.UserByID(ownerID)
 	if err != nil {
 		return nil, errors.New("owner account not found")
+	}
+	// JIT-provision the owner's Linux system user so the new site's files and
+	// pool are tenant-isolated from day one. Best-effort: a provisioning
+	// failure degrades to today's behaviour (pool runs as the web-server user)
+	// rather than blocking the domain.
+	if warn, terr := s.ensureTenant(ctx, owner); terr != nil {
+		log.Printf("create site %s: system-user provisioning failed (continuing without): %v", domain, terr)
+	} else if warn != "" {
+		log.Printf("create site %s: %s", domain, warn)
 	}
 	version, err := s.resolveVersion(phpLabel)
 	if err != nil {
@@ -476,6 +501,12 @@ func (s *Service) reprovisionSite(ctx context.Context, site *store.Site) error {
 // RegenerateAll reprovisions every site (php pool + web config) for the
 // currently-active web server and applies it.
 func (s *Service) RegenerateAll(ctx context.Context) error {
+	// Pool files + cfg.WebServer are shared with server switches, adoption and
+	// tenant upgrades; regenerating mid-switch would write pools for a server
+	// that is not running yet.
+	s.switchMu.Lock()
+	defer s.switchMu.Unlock()
+
 	sites, err := s.store.ListSites()
 	if err != nil {
 		return err

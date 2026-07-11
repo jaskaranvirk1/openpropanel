@@ -86,4 +86,17 @@
     </dl>
   </div>
 </div>
+
+{{/* Maintenance */}}
+<div class="opp-card mt-6 p-5">
+  <h2 class="mb-1 text-sm font-semibold text-zinc-900">Maintenance</h2>
+  <p class="mb-4 text-xs text-zinc-500">
+    Regenerate every managed site's web-server config and PHP-FPM pool from the panel's database, then reload.
+    Use this to repair drift — e.g. after a partially-failed system-user upgrade or a hand-edited config.
+  </p>
+  <form method="post" action="/settings/regenerate"
+        onsubmit="return confirm('Regenerate all site configs and reload the web server?')">
+    <button class="opp-btn-primary">Regenerate site configs</button>
+  </form>
+</div>
 {{end}}

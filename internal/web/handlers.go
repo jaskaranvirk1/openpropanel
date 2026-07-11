@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/openpropanel/openpropanel/internal/auth"
+	"github.com/openpropanel/openpropanel/internal/deploy"
 	"github.com/openpropanel/openpropanel/internal/php"
 	"github.com/openpropanel/openpropanel/internal/store"
 	"github.com/openpropanel/openpropanel/internal/system"
@@ -26,8 +28,14 @@ var usernameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{2,31}$`)
 // the full detail server-side; non-admin users get a generic message so raw
 // command output (absolute paths, httpd -t / certbot / mysql text, other
 // tenants' data) never leaks to them. Admins may see the detail to debug.
+// deploy.UserError is the exception: its message is written to be user-safe
+// (no command output), so every role gets the actionable guidance.
 func (s *Server) opErr(r *http.Request, err error) string {
 	log.Printf("operation error [%s %s]: %v", r.Method, r.URL.Path, err)
+	var ue *deploy.UserError
+	if errors.As(err, &ue) {
+		return ue.Msg
+	}
 	if u := auth.UserFrom(r.Context()); u != nil && u.Role == store.RoleAdmin {
 		return err.Error()
 	}
@@ -57,6 +65,8 @@ type sitesVM struct {
 	IsAdmin     bool
 	Users       []*store.User
 	Modes       []string // serving-mode choices for the folder-mapping UI
+	Host        string   // request host, for rendering the webhook URL
+	CurrentUID  int64    // logged-in user, to default the owner picker sanely
 }
 
 type usersVM struct {
@@ -238,6 +248,7 @@ func (s *Server) getSites(w http.ResponseWriter, r *http.Request) {
 	vm := sitesVM{
 		Rows: rows, PHPVersions: s.php.DetectVersions(), IsAdmin: isAdmin,
 		Modes: []string{store.WebModePHP, store.WebModeStatic, store.WebModeSPA},
+		Host:  r.Host, CurrentUID: u.ID,
 	}
 	if isAdmin {
 		vm.Users, _ = s.store.ListUsers()
@@ -264,11 +275,29 @@ func (s *Server) postCreateSite(w http.ResponseWriter, r *http.Request) {
 	docRoot := r.FormValue("doc_root")
 	// Only an admin may aim a custom doc root outside this site's own tree.
 	allowSharedRoot := u.Role == store.RoleAdmin
-	if _, err := s.domains.CreateSite(r.Context(), owner, domain, phpVersion, docRoot, allowSharedRoot); err != nil {
+	site, err := s.domains.CreateSite(r.Context(), owner, domain, phpVersion, docRoot, allowSharedRoot)
+	if err != nil {
 		redirect(w, r, "/sites", "err", s.opErr(r, err))
 		return
 	}
-	redirect(w, r, "/sites", "msg", "Domain "+domain+" created")
+	// One-form happy path: an optional GitHub URL creates, links and (for a
+	// public repo) deploys in this single POST. A link failure never undoes the
+	// created domain — it flashes with the card anchored so the user can retry.
+	if repoURL := strings.TrimSpace(r.FormValue("repo_url")); repoURL != "" {
+		repo, note, lerr := s.domains.LinkRepo(r.Context(), site.ID, repoURL, r.FormValue("repo_branch"))
+		if lerr != nil {
+			projectRedirect(w, r, site.ID, "err", "Domain "+domain+" created, but linking the repository failed: "+s.opErr(r, lerr))
+			return
+		}
+		if repo.AuthMode == deploy.AuthPublic {
+			s.domains.StartActivate(repo.ID)
+			projectRedirect(w, r, site.ID, "msg", joinFlash("Domain "+domain+" created — deploying "+repo.Owner+"/"+repo.Name+"@"+repo.Branch+" now.", note))
+			return
+		}
+		projectRedirect(w, r, site.ID, "msg", joinFlash("Domain "+domain+" created — one step left: add the deploy key on GitHub, then click Deploy.", note))
+		return
+	}
+	projectRedirect(w, r, site.ID, "msg", "Domain "+domain+" created")
 }
 
 func (s *Server) postDeleteSite(w http.ResponseWriter, r *http.Request) {
@@ -554,6 +583,17 @@ func (s *Server) postWebServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	redirect(w, r, "/settings", "msg", "Web server switched to "+target)
+}
+
+// postRegenerate rebuilds every managed site's php-fpm pool + web config and
+// reloads — the repair action for a partially-failed tenant upgrade (and a
+// general "make the configs match the database again" button).
+func (s *Server) postRegenerate(w http.ResponseWriter, r *http.Request) {
+	if err := s.domains.RegenerateAll(r.Context()); err != nil {
+		redirect(w, r, "/settings", "err", "Regenerate failed: "+s.opErr(r, err))
+		return
+	}
+	redirect(w, r, "/settings", "msg", "All site configurations regenerated and reloaded")
 }
 
 func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {

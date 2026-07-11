@@ -36,6 +36,8 @@ type Server struct {
 	cfgPath  string
 	login    *loginLimiter
 	pmaLogin *loginLimiter // throttles phpMyAdmin's own login POSTs
+	hookLimit *loginLimiter  // throttles rejected webhook deliveries per IP
+	hookSeen  *deliveryCache // replay guard for webhook delivery IDs
 
 	// short-TTL cache so rapid dashboard polling coalesces into one sample
 	// instead of spawning subprocesses per request.
@@ -50,7 +52,8 @@ func New(cfg *config.Config, s *store.Store, a *auth.Manager, d *domains.Service
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, store: s, auth: a, domains: d, php: p, sysuser: su, mariadb: mdb, pma: pma, render: r, cfgPath: cfgPath, login: newLoginLimiter(), pmaLogin: newLoginLimiter()}, nil
+	return &Server{cfg: cfg, store: s, auth: a, domains: d, php: p, sysuser: su, mariadb: mdb, pma: pma, render: r, cfgPath: cfgPath,
+		login: newLoginLimiter(), pmaLogin: newLoginLimiter(), hookLimit: newLoginLimiter(), hookSeen: newDeliveryCache(512)}, nil
 }
 
 // Handler builds the full middleware/route tree.
@@ -63,6 +66,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /login", s.postLogin)
 	mux.HandleFunc("POST /logout", s.postLogout)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
+	// GitHub push webhook: unauthenticated by design (GitHub cannot log in);
+	// authenticated per-request by its per-repo HMAC secret instead. SameOrigin
+	// passes it because server-to-server POSTs send no Origin/Referer.
+	mux.HandleFunc("POST /hooks/github/{id}", s.postGitHubHook)
 
 	// Authenticated application routes live behind the auth middleware.
 	app := http.NewServeMux()
@@ -90,8 +97,9 @@ func (s *Server) Handler() http.Handler {
 	app.HandleFunc("POST /projects/{id}/repo", s.postLinkRepo)
 	app.HandleFunc("POST /projects/{id}/repo/delete", s.postUnlinkRepo)
 	app.HandleFunc("POST /projects/{id}/deploy", s.postDeployProject)
-	app.HandleFunc("POST /repos/{id}/clone", s.postCloneRepo)
-	app.HandleFunc("POST /repos/{id}/verify", s.postVerifyRepo)
+	app.HandleFunc("POST /repos/{id}/activate", s.postActivateRepo)
+	app.HandleFunc("POST /repos/{id}/branch", s.postRepoBranch)
+	app.HandleFunc("GET /repos/{id}/card", s.getRepoCard)
 	app.HandleFunc("GET /repos/{id}/tree", s.getRepoTree)
 
 	app.HandleFunc("GET /databases", s.getDatabases)
@@ -130,6 +138,7 @@ func (s *Server) Handler() http.Handler {
 	app.Handle("POST /settings", auth.RequireAdmin(http.HandlerFunc(s.postSettings)))
 	app.Handle("POST /settings/panel-cert", auth.RequireAdmin(http.HandlerFunc(s.postPanelCert)))
 	app.Handle("POST /settings/webserver", auth.RequireAdmin(http.HandlerFunc(s.postWebServer)))
+	app.Handle("POST /settings/regenerate", auth.RequireAdmin(http.HandlerFunc(s.postRegenerate)))
 
 	mux.Handle("/", s.auth.Middleware(s.setupGate(app)))
 

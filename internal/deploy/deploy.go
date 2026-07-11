@@ -126,24 +126,31 @@ func (m *Manager) RemoveKey(repoID int64) { _ = os.RemoveAll(m.keyDir(repoID)) }
 
 // IsPublic reports whether a GitHub repo is public (an unauthenticated API 200
 // with "private":false), so a public repo can be cloned over HTTPS with no key.
-func (m *Manager) IsPublic(ctx context.Context, owner, name string) bool {
+// sure is false when the check was inconclusive (network error, API rate limit)
+// rather than a positive "not public" answer — callers can tell the user the
+// repo is being *treated* as private rather than *known* private.
+func (m *Manager) IsPublic(ctx context.Context, owner, name string) (public, sure bool) {
 	c, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(c, http.MethodGet, "https://api.github.com/repos/"+owner+"/"+name, nil)
 	if err != nil {
-		return false
+		return false, false
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return false
+		return false, false
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return false
+	switch resp.StatusCode {
+	case http.StatusOK:
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+		return strings.Contains(string(b), `"private":false`), true
+	case http.StatusNotFound:
+		return false, true // private or nonexistent — the API hides both the same way
+	default:
+		return false, false // rate-limited (403) or other API trouble: inconclusive
 	}
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-	return strings.Contains(string(b), `"private":false`)
 }
 
 // ensureKnownHosts writes the pinned host keys to the data dir once.
@@ -241,26 +248,47 @@ func cloneURL(r *store.Repo) string {
 	return SSHURL(r.Owner, r.Name)
 }
 
-// Verify tests connectivity/authorisation with `git ls-remote` (no checkout).
-func (m *Manager) Verify(ctx context.Context, r *store.Repo, uid, gid uint32) error {
+// Verify tests connectivity/authorisation with `git ls-remote` (no checkout)
+// and returns the repository's branch names, so callers can validate the
+// configured branch BEFORE cloning — a typo'd branch should fail with a
+// friendly listing, not a late raw git error.
+func (m *Manager) Verify(ctx context.Context, r *store.Repo, uid, gid uint32) ([]string, error) {
 	if m.cfg.Dev {
-		return nil
+		return []string{r.Branch}, nil
 	}
 	if !ValidBranch(r.Branch) {
-		return errors.New("invalid branch name")
+		return nil, errors.New("invalid branch name")
 	}
-	_, err := m.runGit(ctx, r, uid, gid, "", "ls-remote", "--heads", cloneURL(r))
-	return err
+	out, err := m.runGit(ctx, r, uid, gid, "", "ls-remote", "--heads", cloneURL(r))
+	if err != nil {
+		return nil, err
+	}
+	return parseBranches(out), nil
+}
+
+// parseBranches extracts branch names from `git ls-remote --heads` output
+// (lines of "<sha>\trefs/heads/<name>").
+func parseBranches(out string) []string {
+	var branches []string
+	for _, line := range strings.Split(out, "\n") {
+		if _, ref, ok := strings.Cut(strings.TrimSpace(line), "\t"); ok {
+			if b, found := strings.CutPrefix(ref, "refs/heads/"); found {
+				branches = append(branches, b)
+			}
+		}
+	}
+	return branches
 }
 
 // Clone performs a fresh single-branch checkout into r.CheckoutDir (owned by the
-// tenant). A pre-existing checkout dir is removed first.
-func (m *Manager) Clone(ctx context.Context, r *store.Repo, uid, gid uint32) error {
+// tenant), returning the short commit hash it checked out. A pre-existing
+// checkout dir is removed first.
+func (m *Manager) Clone(ctx context.Context, r *store.Repo, uid, gid uint32) (string, error) {
 	if m.cfg.Dev {
-		return os.MkdirAll(r.CheckoutDir, 0o755)
+		return "devcommit", os.MkdirAll(r.CheckoutDir, 0o755)
 	}
 	if !ValidBranch(r.Branch) {
-		return errors.New("invalid branch name")
+		return "", errors.New("invalid branch name")
 	}
 	// Clone starts from a clean directory, so a pre-existing checkout is removed
 	// first. Guard against destroying real content: only remove the target if it
@@ -269,17 +297,20 @@ func (m *Manager) Clone(ctx context.Context, r *store.Repo, uid, gid uint32) err
 	// tenant filled with their own files that happens to collide with this path.
 	if fi, err := os.Stat(r.CheckoutDir); err == nil && fi.IsDir() {
 		if !dirEmpty(r.CheckoutDir) && !isGitCheckout(r.CheckoutDir) {
-			return fmt.Errorf("refusing to overwrite %s: it is not empty and is not a git checkout — move its contents aside first", r.CheckoutDir)
+			return "", fmt.Errorf("refusing to overwrite %s: it is not empty and is not a git checkout — move its contents aside first", r.CheckoutDir)
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(r.CheckoutDir), 0o755); err != nil {
-		return err
+		return "", err
 	}
 	_ = os.Chown(filepath.Dir(r.CheckoutDir), int(uid), int(gid))
 	_ = os.RemoveAll(r.CheckoutDir)
-	_, err := m.runGit(ctx, r, uid, gid, "",
-		"clone", "--branch", r.Branch, "--single-branch", "--depth", "1", cloneURL(r), r.CheckoutDir)
-	return err
+	if _, err := m.runGit(ctx, r, uid, gid, "",
+		"clone", "--branch", r.Branch, "--single-branch", "--depth", "1", cloneURL(r), r.CheckoutDir); err != nil {
+		return "", err
+	}
+	out, err := m.runGit(ctx, r, uid, gid, r.CheckoutDir, "rev-parse", "--short", "HEAD")
+	return strings.TrimSpace(out), err
 }
 
 // isGitCheckout reports whether dir looks like a git working tree (has a .git).

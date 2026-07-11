@@ -105,6 +105,9 @@ func run() error {
 	}
 	defer st.Close()
 	_ = st.DeleteExpiredSessions()
+	// Background clone/deploy jobs do not survive a restart; un-strand any repo
+	// a previous process left mid-job so its card offers a retry.
+	_ = st.ResetStaleRepoDeploys()
 
 	if err := ensureAdmin(cfg, st, *cfgPath); err != nil {
 		return err

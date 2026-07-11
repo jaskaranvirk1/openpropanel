@@ -95,6 +95,8 @@ type Repo struct {
 	LastStatus    string // ok | error | cloning | deploying
 	LastError     string
 	LastDeployAt  sql.NullInt64
+	WebhookSecret string // HMAC key for the GitHub push webhook ("" = webhook disabled)
+	DetectNote    string // standing note from app auto-detection (e.g. "needs a build step")
 	CreatedAt     time.Time
 }
 
@@ -180,6 +182,8 @@ CREATE TABLE IF NOT EXISTS repos (
     last_status     TEXT NOT NULL DEFAULT '',
     last_error      TEXT NOT NULL DEFAULT '',
     last_deploy_at  INTEGER,
+    webhook_secret  TEXT NOT NULL DEFAULT '',
+    detect_note     TEXT NOT NULL DEFAULT '',
     created_at      INTEGER NOT NULL
 );
 
@@ -234,6 +238,8 @@ CREATE INDEX IF NOT EXISTS idx_dbusers_user ON db_users(user_id);
 		`ALTER TABLE sites ADD COLUMN web_mode TEXT NOT NULL DEFAULT 'php'`,
 		`ALTER TABLE sites ADD COLUMN cert_file TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sites ADD COLUMN key_file TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE repos ADD COLUMN webhook_secret TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE repos ADD COLUMN detect_note TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := s.db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
@@ -337,6 +343,14 @@ func (s *Store) ListUsers() ([]*User, error) {
 // UpdateUserPassword sets a new bcrypt hash for an account.
 func (s *Store) UpdateUserPassword(id int64, hash string) error {
 	_, err := s.db.Exec(`UPDATE users SET password_hash = ? WHERE id = ?`, hash, id)
+	return err
+}
+
+// UpdateUserSystemUser records the Linux system user backing an account (used
+// by just-in-time tenant provisioning when an account gains its first site or
+// repo deploy).
+func (s *Store) UpdateUserSystemUser(id int64, name string) error {
+	_, err := s.db.Exec(`UPDATE users SET system_user = ? WHERE id = ?`, name, id)
 	return err
 }
 
@@ -520,13 +534,14 @@ func (s *Store) SetSiteMapping(id int64, repoID sql.NullInt64, subdir, docRoot, 
 // Repositories (GitHub deploy)
 // ---------------------------------------------------------------------------
 
-const repoCols = `id, project_site_id, provider, owner, name, url, auth_mode, branch, checkout_dir, public_key, key_fingerprint, last_commit, last_status, last_error, last_deploy_at, created_at`
+const repoCols = `id, project_site_id, provider, owner, name, url, auth_mode, branch, checkout_dir, public_key, key_fingerprint, last_commit, last_status, last_error, last_deploy_at, webhook_secret, detect_note, created_at`
 
 func scanRepo(row interface{ Scan(...any) error }) (*Repo, error) {
 	var r Repo
 	var created int64
 	err := row.Scan(&r.ID, &r.ProjectSiteID, &r.Provider, &r.Owner, &r.Name, &r.URL, &r.AuthMode, &r.Branch,
-		&r.CheckoutDir, &r.PublicKey, &r.KeyFingerprint, &r.LastCommit, &r.LastStatus, &r.LastError, &r.LastDeployAt, &created)
+		&r.CheckoutDir, &r.PublicKey, &r.KeyFingerprint, &r.LastCommit, &r.LastStatus, &r.LastError, &r.LastDeployAt,
+		&r.WebhookSecret, &r.DetectNote, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -547,10 +562,10 @@ func (s *Store) CreateRepo(r *Repo) (*Repo, error) {
 		r.Branch = "main"
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO repos (project_site_id, provider, owner, name, url, auth_mode, branch, checkout_dir, public_key, key_fingerprint, last_commit, last_status, last_error, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO repos (project_site_id, provider, owner, name, url, auth_mode, branch, checkout_dir, public_key, key_fingerprint, last_commit, last_status, last_error, webhook_secret, detect_note, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ProjectSiteID, r.Provider, r.Owner, r.Name, r.URL, r.AuthMode, r.Branch, r.CheckoutDir,
-		r.PublicKey, r.KeyFingerprint, r.LastCommit, r.LastStatus, r.LastError, now.Unix())
+		r.PublicKey, r.KeyFingerprint, r.LastCommit, r.LastStatus, r.LastError, r.WebhookSecret, r.DetectNote, now.Unix())
 	if err != nil {
 		return nil, err
 	}
@@ -579,11 +594,50 @@ func (s *Store) SetRepoKey(id int64, publicKey, fingerprint string) error {
 	return err
 }
 
+// SetRepoWebhookSecret stores the HMAC key GitHub signs push webhooks with.
+func (s *Store) SetRepoWebhookSecret(id int64, secret string) error {
+	_, err := s.db.Exec(`UPDATE repos SET webhook_secret = ? WHERE id = ?`, secret, id)
+	return err
+}
+
+// SetRepoDetectNote records the standing app-detection note shown on the repo
+// card ("" clears it).
+func (s *Store) SetRepoDetectNote(id int64, note string) error {
+	_, err := s.db.Exec(`UPDATE repos SET detect_note = ? WHERE id = ?`, note, id)
+	return err
+}
+
+// SetRepoBranch changes the branch a repo deploys from.
+func (s *Store) SetRepoBranch(id int64, branch string) error {
+	_, err := s.db.Exec(`UPDATE repos SET branch = ? WHERE id = ?`, branch, id)
+	return err
+}
+
+// ClearRepoMapping detaches every site mapped into a repo's checkout, keeping
+// doc_root/web_mode untouched so an unlinked site keeps serving its current
+// files. Restores the invariant "RepoID valid ⇒ repo row exists" on unlink.
+func (s *Store) ClearRepoMapping(repoID int64) error {
+	_, err := s.db.Exec(`UPDATE sites SET repo_id = NULL, repo_subdir = '' WHERE repo_id = ?`, repoID)
+	return err
+}
+
 // UpdateRepoDeploy records the outcome of a clone/deploy.
 func (s *Store) UpdateRepoDeploy(id int64, commit, status, errMsg string, when time.Time) error {
 	_, err := s.db.Exec(
 		`UPDATE repos SET last_commit = ?, last_status = ?, last_error = ?, last_deploy_at = ? WHERE id = ?`,
 		commit, status, errMsg, when.Unix(), id)
+	return err
+}
+
+// ResetStaleRepoDeploys flips repos stranded in a busy status ("cloning" /
+// "deploying") to a retryable error. Busy statuses are only ever resolved by
+// an in-memory background job, so any busy row found at startup was orphaned
+// by a restart mid-job — without this sweep its card would spin forever with
+// every action hidden.
+func (s *Store) ResetStaleRepoDeploys() error {
+	_, err := s.db.Exec(
+		`UPDATE repos SET last_status = 'error', last_error = 'the panel restarted during this deploy — click Deploy to retry'
+		 WHERE last_status IN ('cloning', 'deploying')`)
 	return err
 }
 

@@ -58,6 +58,86 @@
 </details>
 {{end}}
 
+{{/* The GitHub repo card: linked state, deploy-key steps, live progress and
+     push-to-deploy setup. Rendered on the page AND as an HTMX fragment
+     (GET /repos/{id}/card) that polls itself while a job is running.
+     Context: dict with Repo, Pid (project site id), Host (panel host). */}}
+{{define "repoBox"}}
+{{$r := .Repo}}{{$pid := .Pid}}{{$host := .Host}}
+{{$busy := or (eq $r.LastStatus "cloning") (eq $r.LastStatus "deploying")}}
+{{$pending := and (ne $r.AuthMode "https_public") (eq $r.LastStatus "linked")}}
+<div id="repobox-{{$r.ID}}" class="rounded-xl border border-zinc-200 bg-zinc-50 p-4"
+     {{if $busy}}hx-get="/repos/{{$r.ID}}/card" hx-trigger="load delay:3s" hx-swap="outerHTML"{{end}}>
+  <div class="flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+    <a href="https://github.com/{{$r.Owner}}/{{$r.Name}}" target="_blank" rel="noopener" class="font-mono text-zinc-700 hover:text-blue-600">{{$r.Owner}}/{{$r.Name}}@{{$r.Branch}}</a>
+    {{if $busy}}
+      <span class="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 font-semibold text-blue-700">{{if eq $r.LastStatus "cloning"}}cloning…{{else}}deploying…{{end}}</span>
+      <span>this card updates automatically</span>
+    {{else if eq $r.LastStatus "ok"}}
+      <span class="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 font-semibold text-emerald-700">deployed{{if $r.LastCommit}} {{$r.LastCommit}}{{end}}</span>
+    {{else if eq $r.LastStatus "error"}}
+      <span class="rounded-full border border-red-200 bg-red-50 px-2 py-0.5 font-semibold text-red-700">failed</span>
+    {{end}}
+  </div>
+
+  {{if $r.LastError}}
+  <p class="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{{$r.LastError}}</p>
+  {{end}}
+  {{if $r.DetectNote}}
+  <p class="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">{{$r.DetectNote}}</p>
+  {{end}}
+
+  {{if and $r.PublicKey (or $pending (eq $r.LastStatus "error"))}}
+  <div class="mt-3 space-y-2 text-xs text-zinc-600">
+    <p>A <strong>deploy key</strong> is a read-only password that lets this server download your code — it cannot push changes.</p>
+    <ol class="list-decimal space-y-1 pl-5">
+      <li>Copy the key: <button type="button" class="opp-btn" data-copy="{{$r.PublicKey}}" onclick="navigator.clipboard.writeText(this.dataset.copy);this.textContent='Copied ✓';setTimeout(()=>{this.textContent='Copy key'},1500)">Copy key</button></li>
+      <li>Open <a href="https://github.com/{{$r.Owner}}/{{$r.Name}}/settings/keys" target="_blank" rel="noopener" class="text-blue-600 underline">github.com/{{$r.Owner}}/{{$r.Name}}/settings/keys</a> → <em>Add deploy key</em>, paste it, leave <em>Allow write access</em> unchecked.</li>
+      <li>Click <strong>Deploy</strong> below.</li>
+    </ol>
+    <pre class="overflow-x-auto rounded-lg border border-zinc-200 bg-white p-2 font-mono text-[11px] text-zinc-700">{{$r.PublicKey}}</pre>
+    <p class="text-zinc-500">Adding a deploy key needs admin access to the repository. For an organisation repo you don't admin, ask an org owner to add it — or deploy from a fork you own.</p>
+  </div>
+  {{end}}
+
+  <div class="mt-3 flex flex-wrap items-end gap-2">
+    {{if not $busy}}
+    {{if eq $r.LastStatus "ok"}}
+    <form method="post" action="/projects/{{$pid}}/deploy"><button class="opp-btn-primary">Redeploy</button></form>
+    {{else}}
+    <form method="post" action="/repos/{{$r.ID}}/activate"><button class="opp-btn-primary">Deploy</button></form>
+    {{end}}
+    <form method="post" action="/repos/{{$r.ID}}/branch" class="flex items-end gap-2">
+      <div>
+        <label class="opp-lbl">Branch</label>
+        <input name="branch" value="{{$r.Branch}}" class="opp-input w-32">
+      </div>
+      <button class="opp-btn">Change</button>
+    </form>
+    <form method="post" action="/projects/{{$pid}}/repo/delete" onsubmit="return confirm('Unlink the repository? Files on disk are kept.')"><button class="opp-btn-danger">Unlink</button></form>
+    {{end}}
+  </div>
+
+  {{if and $r.WebhookSecret (eq $r.LastStatus "ok")}}
+  <details class="mt-3">
+    <summary class="cursor-pointer list-none text-xs font-medium text-zinc-700 hover:text-blue-600">⚡ Auto-deploy on push (webhook)</summary>
+    <div class="mt-2 space-y-2 text-xs text-zinc-600">
+      <p>Deploy automatically every time you <code class="rounded bg-zinc-100 px-1">git push</code>. On GitHub open the repo → Settings → Webhooks → <em>Add webhook</em>:</p>
+      <ol class="list-decimal space-y-1 pl-5">
+        <li>Payload URL: <code class="rounded bg-zinc-100 px-1">https://{{$host}}/hooks/github/{{$r.ID}}</code>
+            <button type="button" class="opp-btn" data-copy="https://{{$host}}/hooks/github/{{$r.ID}}" onclick="navigator.clipboard.writeText(this.dataset.copy);this.textContent='Copied ✓';setTimeout(()=>{this.textContent='Copy'},1500)">Copy</button></li>
+        <li><strong>Content type: application/json</strong> (GitHub defaults to the other one — change it).</li>
+        <li>Secret: <code class="rounded bg-zinc-100 px-1">{{$r.WebhookSecret}}</code>
+            <button type="button" class="opp-btn" data-copy="{{$r.WebhookSecret}}" onclick="navigator.clipboard.writeText(this.dataset.copy);this.textContent='Copied ✓';setTimeout(()=>{this.textContent='Copy'},1500)">Copy</button></li>
+        <li>Events: <em>Just the push event</em>.</li>
+      </ol>
+      <p class="text-zinc-500">GitHub's green checkmark means <em>delivered</em>, not deployed — this card shows the deploy result. If the panel still uses its self-signed certificate, either get a panel certificate in Settings → Panel HTTPS or tick <em>Disable SSL verification</em> on the webhook.</p>
+    </div>
+  </details>
+  {{end}}
+</div>
+{{end}}
+
 {{define "content"}}
 <div class="mb-8 flex items-center justify-between gap-3">
   <div>
@@ -67,29 +147,41 @@
   {{if .Data.IsAdmin}}<form method="post" action="/sites/scan"><button class="opp-btn">Scan server</button></form>{{end}}
 </div>
 
-{{/* New project */}}
-<details class="opp-card mb-6">
+{{/* New project: domain + (optionally) a GitHub repo, deployed in one go. */}}
+<details class="opp-card mb-6" {{if not .Data.Rows}}open{{end}}>
   <summary class="cursor-pointer list-none px-5 py-4 text-sm font-semibold text-zinc-900">+ New project</summary>
-  <form method="post" action="/sites" class="flex flex-wrap items-end gap-3 border-t border-zinc-200 px-5 py-4">
-    <div class="min-w-[200px] flex-1">
-      <label class="opp-lbl">Domain</label>
-      <input name="domain" required placeholder="example.com" pattern="[a-zA-Z0-9.-]+" class="opp-input">
+  <form method="post" action="/sites" class="space-y-3 border-t border-zinc-200 px-5 py-4">
+    <div class="flex flex-wrap items-end gap-3">
+      <div class="min-w-[200px] flex-1">
+        <label class="opp-lbl">Domain</label>
+        <input name="domain" required placeholder="example.com" pattern="[a-zA-Z0-9.-]+" class="opp-input">
+      </div>
+      <div class="min-w-[200px] flex-1">
+        <label class="opp-lbl">Folder <span class="text-zinc-400">· optional</span></label>
+        <input name="doc_root" placeholder="default: /var/www/<domain>/public_html" class="opp-input">
+      </div>
+      <div>
+        <label class="opp-lbl">PHP</label>
+        <select name="php_version" class="opp-select">{{range .Data.PHPVersions}}<option value="{{.Label}}">PHP {{.Label}}</option>{{end}}</select>
+      </div>
+      {{if .Data.IsAdmin}}
+      <div>
+        <label class="opp-lbl">Owner</label>
+        <select name="owner_id" class="opp-select">{{range .Data.Users}}<option value="{{.ID}}" {{if eq .ID $.Data.CurrentUID}}selected{{end}}>{{.Username}}</option>{{end}}</select>
+      </div>
+      {{end}}
     </div>
-    <div class="min-w-[200px] flex-1">
-      <label class="opp-lbl">Folder <span class="text-zinc-400">· optional</span></label>
-      <input name="doc_root" placeholder="default: /var/www/<domain>/public_html" class="opp-input">
+    <div class="flex flex-wrap items-end gap-3">
+      <div class="min-w-[240px] flex-1">
+        <label class="opp-lbl">Deploy from GitHub <span class="text-zinc-400">· optional</span></label>
+        <input name="repo_url" placeholder="https://github.com/owner/repo" class="opp-input">
+      </div>
+      <div>
+        <label class="opp-lbl">Branch</label>
+        <input name="repo_branch" value="main" class="opp-input w-28">
+      </div>
+      <button class="opp-btn-primary">Create project</button>
     </div>
-    <div>
-      <label class="opp-lbl">PHP</label>
-      <select name="php_version" class="opp-select">{{range .Data.PHPVersions}}<option value="{{.Label}}">PHP {{.Label}}</option>{{end}}</select>
-    </div>
-    {{if .Data.IsAdmin}}
-    <div>
-      <label class="opp-lbl">Owner</label>
-      <select name="owner_id" class="opp-select">{{range .Data.Users}}<option value="{{.ID}}">{{.Username}}</option>{{end}}</select>
-    </div>
-    {{end}}
-    <button class="opp-btn-primary">Create</button>
   </form>
 </details>
 
@@ -101,7 +193,7 @@
 {{range .Data.Rows}}
 {{$hasRepo := false}}{{if .Repo}}{{$hasRepo = true}}{{end}}
 {{$pid := .Site.ID}}
-<section class="opp-card overflow-hidden">
+<section id="project-{{$pid}}" class="opp-card overflow-hidden">
   <div class="flex items-center gap-3 border-b border-zinc-200 bg-zinc-50 px-5 py-4">
     <div class="min-w-0 flex-1">
       <a href="https://{{.Site.Domain}}" target="_blank" rel="noopener" class="text-sm font-semibold text-zinc-900 hover:text-blue-600">{{.Site.Domain}}</a>
@@ -112,7 +204,6 @@
         {{if $.Data.IsAdmin}}<span>· {{.OwnerName}}</span>{{end}}
       </div>
     </div>
-    {{if $hasRepo}}<form method="post" action="/projects/{{$pid}}/deploy"><button class="opp-btn-primary">Redeploy</button></form>{{end}}
   </div>
 
   <div>
@@ -135,32 +226,16 @@
     </details>
 
     {{if $hasRepo}}
-      {{with .Repo}}
-      <div class="rounded-xl border border-zinc-200 bg-zinc-50 p-4">
-        <div class="flex flex-wrap items-center gap-2 text-xs text-zinc-500">
-          <span class="font-mono text-zinc-700">{{.Owner}}/{{.Name}}@{{.Branch}}</span>
-          {{if .LastStatus}}<span>· {{.LastStatus}}{{if .LastCommit}} ({{.LastCommit}}){{end}}</span>{{end}}
-          {{if .LastError}}<span class="text-red-600">· {{.LastError}}</span>{{end}}
-        </div>
-        {{if .PublicKey}}
-        <p class="mt-3 text-xs text-zinc-500">Add this read-only deploy key on GitHub → the repo → Settings → Deploy keys, then Test &amp; Clone:</p>
-        <pre class="mt-1 overflow-x-auto rounded-lg border border-zinc-200 bg-zinc-50 p-2 font-mono text-[11px] text-zinc-700">{{.PublicKey}}</pre>
-        {{end}}
-        <div class="mt-3 flex flex-wrap gap-2">
-          <form method="post" action="/repos/{{.ID}}/verify"><button class="opp-btn">Test connection</button></form>
-          <form method="post" action="/repos/{{.ID}}/clone"><button class="opp-btn-primary">Clone / update</button></form>
-          <form method="post" action="/projects/{{$pid}}/repo/delete" onsubmit="return confirm('Unlink the repository? Files on disk are kept.')"><button class="opp-btn-danger">Unlink</button></form>
-        </div>
-      </div>
-      {{end}}
+      {{template "repoBox" (dict "Repo" .Repo "Pid" $pid "Host" $.Data.Host)}}
     {{else}}
       <details>
         <summary class="cursor-pointer list-none text-sm text-zinc-700 hover:text-blue-600">Deploy from GitHub</summary>
         <form method="post" action="/projects/{{$pid}}/repo" class="mt-3 flex flex-wrap items-end gap-2">
           <input name="repo_url" required placeholder="https://github.com/owner/repo" class="opp-input min-w-[240px] flex-1">
           <input name="branch" value="main" class="opp-input w-28">
-          <button class="opp-btn-primary">Link repository</button>
+          <button class="opp-btn-primary">Connect &amp; deploy</button>
         </form>
+        <p class="mt-2 text-xs text-zinc-500">Public repos deploy immediately. Private repos get a read-only deploy key to add on GitHub — one extra click.</p>
       </details>
     {{end}}
   </div>

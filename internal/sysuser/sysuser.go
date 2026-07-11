@@ -45,6 +45,10 @@ func (m *Manager) Exists(name string) bool {
 	return err == nil
 }
 
+// IsReserved reports whether name is a reserved service/system account that
+// must never own tenant files or run a pool.
+func IsReserved(name string) bool { return reserved[name] }
+
 // Ensure guarantees an unprivileged system user exists, creating it with
 // useradd (login-less, with a home directory) if necessary. It reuses an
 // existing ordinary account, but refuses reserved names and privileged
