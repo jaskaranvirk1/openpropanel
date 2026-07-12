@@ -25,8 +25,8 @@
   <form method="post" action="/files/upload" enctype="multipart/form-data" class="flex items-end gap-2">
     <input type="hidden" name="site" value="{{$sid}}"><input type="hidden" name="path" value="{{$cur}}">
     <div>
-      <label class="opp-lbl">Upload</label>
-      <input type="file" name="file" required class="text-xs text-zinc-600 file:mr-2 file:rounded-md file:border-0 file:bg-zinc-100 file:px-2.5 file:py-1 file:text-xs file:text-zinc-700">
+      <label class="opp-lbl">Upload <span class="text-zinc-400">· multiple ok</span></label>
+      <input type="file" name="file" multiple required class="text-xs text-zinc-600 file:mr-2 file:rounded-md file:border-0 file:bg-zinc-100 file:px-2.5 file:py-1 file:text-xs file:text-zinc-700">
     </div>
     <button class="opp-btn">Upload</button>
   </form>
@@ -48,13 +48,41 @@
   </form>
 </div>
 
+{{/* Bulk-selection form. Declared OUTSIDE the table (rows carry their own
+     per-entry forms, and forms must not nest); checkboxes and the bulk
+     buttons attach to it via the form= attribute. */}}
+<form id="bulkform" method="post">
+  <input type="hidden" name="site" value="{{$sid}}"><input type="hidden" name="path" value="{{$cur}}">
+</form>
+
+{{/* Bulk toolbar — acts on the checked rows below. */}}
+<div class="opp-card mb-3 flex flex-wrap items-end gap-3 p-3 text-xs">
+  <span class="pb-1.5 font-medium text-zinc-500">With selected:</span>
+  <button form="bulkform" formaction="/files/bulk-delete" onclick="return confirm('Delete the selected items?')" class="opp-btn-danger">Delete</button>
+  <div class="flex items-end gap-1.5">
+    <div>
+      <label class="opp-lbl">Move to folder</label>
+      <input form="bulkform" name="dest" placeholder="blank = top level" class="opp-input w-40 px-2 py-1 text-xs">
+    </div>
+    <button form="bulkform" formaction="/files/bulk-move" class="opp-btn">Move</button>
+  </div>
+  <div class="flex items-end gap-1.5">
+    <div>
+      <label class="opp-lbl">Compress to</label>
+      <input form="bulkform" name="archive" placeholder="archive.zip" class="opp-input w-40 px-2 py-1 text-xs">
+    </div>
+    <button form="bulkform" formaction="/files/zip" class="opp-btn">Zip</button>
+  </div>
+</div>
+
 {{/* Listing */}}
 <div class="opp-card overflow-hidden">
   <div class="overflow-x-auto">
   <table class="w-full text-sm">
     <thead>
       <tr class="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-400">
-        <th class="px-5 py-3 font-medium">Name</th>
+        <th class="w-8 px-3 py-3"><input type="checkbox" onclick="document.querySelectorAll('input[name=sel]').forEach(c => c.checked = this.checked)" title="Select all"></th>
+        <th class="px-2 py-3 font-medium">Name</th>
         <th class="px-3 py-3 font-medium">Size</th>
         <th class="px-3 py-3 font-medium">Perms</th>
         <th class="px-3 py-3 font-medium">Modified</th>
@@ -64,14 +92,15 @@
     <tbody class="divide-y divide-zinc-100">
       {{if not .Data.AtRoot}}
       <tr>
-        <td colspan="5" class="px-5 py-2">
+        <td colspan="6" class="px-5 py-2">
           <a href="/files?site={{$sid}}&path={{.Data.Parent}}" class="text-zinc-500 hover:text-blue-600">.. (up one level)</a>
         </td>
       </tr>
       {{end}}
       {{range .Data.Entries}}
       <tr class="hover:bg-zinc-50">
-        <td class="px-5 py-2.5">
+        <td class="px-3 py-2.5"><input type="checkbox" form="bulkform" name="sel" value="{{.Name}}"></td>
+        <td class="px-2 py-2.5">
           {{if .IsDir}}
           <a href="/files?site={{$sid}}&path={{.RelPath}}" class="inline-flex items-center gap-2 font-medium text-zinc-900 hover:text-blue-600">
             <svg class="h-4 w-4 text-blue-600" viewBox="0 0 20 20" fill="currentColor"><path d="M3 5a2 2 0 0 1 2-2h3l2 2h5a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5Z"/></svg>
@@ -89,6 +118,12 @@
         <td class="px-3 py-2.5 text-zinc-500">{{.ModTime.Format "2006-01-02 15:04"}}</td>
         <td class="px-5 py-2.5">
           <div class="flex items-center justify-end gap-2">
+            {{if and (not .IsDir) (hasSuffix .Name ".zip")}}
+            <form method="post" action="/files/unzip" onsubmit="return confirm('Extract {{.Name}} here? Existing files with the same names are overwritten.')">
+              <input type="hidden" name="site" value="{{$sid}}"><input type="hidden" name="path" value="{{$cur}}"><input type="hidden" name="name" value="{{.Name}}">
+              <button class="text-xs text-zinc-500 hover:text-blue-600">Extract</button>
+            </form>
+            {{end}}
             {{if not .IsDir}}
             <a href="/files/download?site={{$sid}}&path={{.RelPath}}" class="text-xs text-zinc-500 hover:text-blue-600">Download</a>
             {{end}}
@@ -104,6 +139,11 @@
                   <input type="hidden" name="site" value="{{$sid}}"><input type="hidden" name="path" value="{{$cur}}"><input type="hidden" name="name" value="{{.Name}}">
                   <input name="dest" placeholder="move to folder (blank = top)" class="opp-input w-full px-2 py-1 text-xs">
                   <button class="opp-btn">Move</button>
+                </form>
+                <form method="post" action="/files/copy" class="flex items-center gap-1.5">
+                  <input type="hidden" name="site" value="{{$sid}}"><input type="hidden" name="path" value="{{$cur}}"><input type="hidden" name="name" value="{{.Name}}">
+                  <input name="dest" value="{{$cur}}" placeholder="copy to folder" class="opp-input w-full px-2 py-1 text-xs">
+                  <button class="opp-btn">Copy</button>
                 </form>
                 <form method="post" action="/files/chmod" class="flex items-center gap-1.5">
                   <input type="hidden" name="site" value="{{$sid}}"><input type="hidden" name="path" value="{{$cur}}"><input type="hidden" name="name" value="{{.Name}}">
@@ -121,7 +161,7 @@
       </tr>
       {{end}}
       {{if not .Data.Entries}}
-      <tr><td colspan="5" class="px-5 py-10 text-center text-sm text-zinc-500">This folder is empty.</td></tr>
+      <tr><td colspan="6" class="px-5 py-10 text-center text-sm text-zinc-500">This folder is empty.</td></tr>
       {{end}}
     </tbody>
   </table>

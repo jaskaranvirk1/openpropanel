@@ -55,6 +55,7 @@ var funcMap = template.FuncMap{
 		return m
 	},
 	"shortpath": shortPath,
+	"hasSuffix": strings.HasSuffix,
 	"hbytes":    humanBytes,
 	"hsize": func(n int64) string {
 		if n < 0 {

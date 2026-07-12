@@ -188,19 +188,39 @@ func (s *Server) postFileUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer fs.Close()
 	dir := cleanRel(r.FormValue("path"))
-	file, header, err := r.FormFile("file")
-	if err != nil {
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		s.filesRedirect(w, r, site.ID, dir, "err", "Upload too large or malformed")
+		return
+	}
+	headers := r.MultipartForm.File["file"]
+	if len(headers) == 0 {
 		s.filesRedirect(w, r, site.ID, dir, "err", "No file provided")
 		return
 	}
-	defer file.Close()
-	rel, err := fs.SaveUploadReader(dir, header.Filename, file)
-	if err != nil {
-		s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+	var saved []string
+	for _, header := range headers {
+		file, err := header.Open()
+		if err != nil {
+			continue
+		}
+		rel, err := fs.SaveUploadReader(dir, header.Filename, file)
+		file.Close()
+		if err != nil {
+			s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+			return
+		}
+		s.chownToSite(fs, site, rel)
+		saved = append(saved, path.Base(rel))
+	}
+	if len(saved) == 0 {
+		s.filesRedirect(w, r, site.ID, dir, "err", "No file could be read from the upload")
 		return
 	}
-	s.chownToSite(fs, site, rel)
-	s.filesRedirect(w, r, site.ID, dir, "msg", "Uploaded "+path.Base(rel))
+	msg := "Uploaded " + saved[0]
+	if len(saved) > 1 {
+		msg = "Uploaded " + strconv.Itoa(len(saved)) + " files"
+	}
+	s.filesRedirect(w, r, site.ID, dir, "msg", msg)
 }
 
 func (s *Server) postFileMkdir(w http.ResponseWriter, r *http.Request) {
@@ -305,6 +325,156 @@ func (s *Server) postFileMove(w http.ResponseWriter, r *http.Request) {
 	s.filesRedirect(w, r, site.ID, dir, "msg", name+" moved to /"+dest)
 }
 
+// postFileCopy duplicates an entry into another directory (blank = current).
+// A same-directory copy gets a "-copy" suffix so it never collides.
+func (s *Server) postFileCopy(w http.ResponseWriter, r *http.Request) {
+	fs, site, ok := s.openFS(w, r)
+	if !ok {
+		return
+	}
+	defer fs.Close()
+	dir := cleanRel(r.FormValue("path"))
+	name := r.FormValue("name")
+	dest := cleanRel(r.FormValue("dest"))
+	if !validName(name) {
+		s.filesRedirect(w, r, site.ID, dir, "err", "Invalid name")
+		return
+	}
+	targetName := name
+	if dest == dir {
+		ext := path.Ext(name)
+		targetName = strings.TrimSuffix(name, ext) + "-copy" + ext
+	}
+	target := path.Join(dest, targetName)
+	if err := fs.CopyEntry(path.Join(dir, name), target); err != nil {
+		s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+		return
+	}
+	s.chownTreeToSite(fs, site, target)
+	s.filesRedirect(w, r, site.ID, dir, "msg", "Copied "+name+" to /"+path.Join(dest, targetName))
+}
+
+// postFileZip archives the selected entries of the current directory.
+func (s *Server) postFileZip(w http.ResponseWriter, r *http.Request) {
+	fs, site, ok := s.openFS(w, r)
+	if !ok {
+		return
+	}
+	defer fs.Close()
+	dir := cleanRel(r.FormValue("path"))
+	names, ok := selectedNames(r)
+	if !ok {
+		s.filesRedirect(w, r, site.ID, dir, "err", "Select at least one file or folder")
+		return
+	}
+	archive := strings.TrimSpace(r.FormValue("archive"))
+	if archive == "" {
+		archive = "archive.zip"
+	}
+	if !strings.HasSuffix(archive, ".zip") {
+		archive += ".zip"
+	}
+	if !validName(archive) {
+		s.filesRedirect(w, r, site.ID, dir, "err", "Invalid archive name")
+		return
+	}
+	target := path.Join(dir, archive)
+	if err := fs.Zip(dir, names, target); err != nil {
+		s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+		return
+	}
+	s.chownToSite(fs, site, target)
+	s.filesRedirect(w, r, site.ID, dir, "msg", "Created "+archive+" ("+strconv.Itoa(len(names))+" item(s))")
+}
+
+// postFileUnzip extracts a .zip into the current directory.
+func (s *Server) postFileUnzip(w http.ResponseWriter, r *http.Request) {
+	fs, site, ok := s.openFS(w, r)
+	if !ok {
+		return
+	}
+	defer fs.Close()
+	dir := cleanRel(r.FormValue("path"))
+	name := r.FormValue("name")
+	if !validName(name) {
+		s.filesRedirect(w, r, site.ID, dir, "err", "Invalid name")
+		return
+	}
+	created, err := fs.Unzip(path.Join(dir, name), dir)
+	// Chown whatever WAS extracted even on a partial failure, so the tenant's
+	// PHP can manage the files that did land. Resolve the tenant uid/gid ONCE
+	// (it is loop-invariant) rather than per entry — an archive can hold
+	// thousands of files.
+	if uid, gid, ok := s.siteTenantIDs(site); ok {
+		for _, rel := range created {
+			_ = fs.Chown(rel, uid, gid)
+		}
+	}
+	if err != nil {
+		s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+		return
+	}
+	s.filesRedirect(w, r, site.ID, dir, "msg", "Extracted "+name+" ("+strconv.Itoa(len(created))+" item(s))")
+}
+
+// postBulkDelete removes every selected entry of the current directory.
+func (s *Server) postBulkDelete(w http.ResponseWriter, r *http.Request) {
+	fs, site, ok := s.openFS(w, r)
+	if !ok {
+		return
+	}
+	defer fs.Close()
+	dir := cleanRel(r.FormValue("path"))
+	names, ok := selectedNames(r)
+	if !ok {
+		s.filesRedirect(w, r, site.ID, dir, "err", "Select at least one file or folder")
+		return
+	}
+	for _, name := range names {
+		if err := fs.Delete(path.Join(dir, name)); err != nil {
+			s.filesRedirect(w, r, site.ID, dir, "err", name+": "+userError(err))
+			return
+		}
+	}
+	s.filesRedirect(w, r, site.ID, dir, "msg", strconv.Itoa(len(names))+" item(s) deleted")
+}
+
+// postBulkMove moves every selected entry into another directory.
+func (s *Server) postBulkMove(w http.ResponseWriter, r *http.Request) {
+	fs, site, ok := s.openFS(w, r)
+	if !ok {
+		return
+	}
+	defer fs.Close()
+	dir := cleanRel(r.FormValue("path"))
+	dest := cleanRel(r.FormValue("dest"))
+	names, ok := selectedNames(r)
+	if !ok {
+		s.filesRedirect(w, r, site.ID, dir, "err", "Select at least one file or folder")
+		return
+	}
+	for _, name := range names {
+		if err := fs.Rename(path.Join(dir, name), path.Join(dest, name)); err != nil {
+			s.filesRedirect(w, r, site.ID, dir, "err", name+": "+userError(err))
+			return
+		}
+	}
+	s.filesRedirect(w, r, site.ID, dir, "msg", strconv.Itoa(len(names))+" item(s) moved to /"+dest)
+}
+
+// selectedNames returns the validated multi-select checkbox values.
+func selectedNames(r *http.Request) ([]string, bool) {
+	_ = r.ParseForm()
+	raw := r.Form["sel"]
+	names := make([]string, 0, len(raw))
+	for _, n := range raw {
+		if validName(n) {
+			names = append(names, n)
+		}
+	}
+	return names, len(names) > 0
+}
+
 func (s *Server) postFileChmod(w http.ResponseWriter, r *http.Request) {
 	fs, site, ok := s.openFS(w, r)
 	if !ok {
@@ -368,23 +538,36 @@ func contentDisposition(name string) string {
 // account's PHP (which runs as that user) can read/write it. No-op in dev or
 // when the account has no system user.
 func (s *Server) chownToSite(fs *filemanager.FS, site *store.Site, rel string) {
+	if uid, gid, ok := s.siteTenantIDs(site); ok {
+		_ = fs.Chown(rel, uid, gid)
+	}
+}
+
+// chownTreeToSite is chownToSite for a whole subtree (copied folders).
+func (s *Server) chownTreeToSite(fs *filemanager.FS, site *store.Site, rel string) {
+	if uid, gid, ok := s.siteTenantIDs(site); ok {
+		_ = fs.ChownTree(rel, uid, gid)
+	}
+}
+
+func (s *Server) siteTenantIDs(site *store.Site) (uid, gid int, ok bool) {
 	if s.cfg.Dev {
-		return
+		return 0, 0, false
 	}
 	owner, err := s.store.UserByID(site.UserID)
 	if err != nil || owner.SystemUser == "" {
-		return
+		return 0, 0, false
 	}
 	u, err := osuser.Lookup(owner.SystemUser)
 	if err != nil {
-		return
+		return 0, 0, false
 	}
 	uid, err1 := strconv.Atoi(u.Uid)
 	gid, err2 := strconv.Atoi(u.Gid)
 	if err1 != nil || err2 != nil {
-		return
+		return 0, 0, false
 	}
-	_ = fs.Chown(rel, uid, gid)
+	return uid, gid, true
 }
 
 // userError maps an internal filesystem error to a safe, generic message,
@@ -402,6 +585,8 @@ func userError(err error) string {
 		return "That file is not editable text"
 	case errors.Is(err, filemanager.ErrIsDir):
 		return "That is a directory"
+	case errors.Is(err, filemanager.ErrArchiveTooBig):
+		return "The archive is too large to extract on the server"
 	case os.IsNotExist(err):
 		return "No such file or folder"
 	case os.IsExist(err):

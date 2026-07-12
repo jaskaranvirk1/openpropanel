@@ -128,7 +128,12 @@ func (s *Server) Handler() http.Handler {
 	app.HandleFunc("POST /files/delete", s.postFileDelete)
 	app.HandleFunc("POST /files/rename", s.postFileRename)
 	app.HandleFunc("POST /files/move", s.postFileMove)
+	app.HandleFunc("POST /files/copy", s.postFileCopy)
 	app.HandleFunc("POST /files/chmod", s.postFileChmod)
+	app.HandleFunc("POST /files/zip", s.postFileZip)
+	app.HandleFunc("POST /files/unzip", s.postFileUnzip)
+	app.HandleFunc("POST /files/bulk-delete", s.postBulkDelete)
+	app.HandleFunc("POST /files/bulk-move", s.postBulkMove)
 
 	// Admin-only routes.
 	app.Handle("GET /users", auth.RequireAdmin(http.HandlerFunc(s.getUsers)))
