@@ -36,9 +36,46 @@ var (
 type Entry struct {
 	Name    string
 	IsDir   bool
+	IsLink  bool // symbolic link (its target is never followed for listing)
 	Size    int64
 	Perm    string // octal, e.g. "0644"
+	Sym     string // symbolic perms, e.g. "rw-r--r--"
+	Mode    string // one-letter type: "d" dir, "l" link, "-" file
+	UID     int
+	GID     int
+	Owner   string // resolved user name (or numeric uid as a string)
+	Group   string // resolved group name (or numeric gid as a string)
 	ModTime time.Time
+}
+
+// fillMeta populates the ownership/permission fields of e from fi.
+func fillMeta(e *Entry, fi os.FileInfo) {
+	m := fi.Mode()
+	e.Perm = "0" + strconv.FormatUint(uint64(m.Perm()), 8)
+	e.Sym = permString(m)
+	e.IsLink = m&os.ModeSymlink != 0
+	switch {
+	case e.IsLink:
+		e.Mode = "l"
+	case m.IsDir():
+		e.Mode = "d"
+	default:
+		e.Mode = "-"
+	}
+	e.UID, e.GID, e.Owner, e.Group = fileOwner(fi)
+}
+
+// permString renders the 9-bit rwx form of a mode, e.g. "rwxr-x---".
+func permString(m os.FileMode) string {
+	const set = "rwxrwxrwx"
+	b := []byte("---------")
+	p := m.Perm()
+	for i := 0; i < 9; i++ {
+		if p&(1<<uint(8-i)) != 0 {
+			b[i] = set[i]
+		}
+	}
+	return string(b)
 }
 
 // FS is a filesystem confined to a root directory.
@@ -95,13 +132,14 @@ func (f *FS) List(rel string) ([]Entry, error) {
 		if err != nil {
 			continue
 		}
-		out = append(out, Entry{
+		e := Entry{
 			Name:    de.Name(),
 			IsDir:   de.IsDir(),
 			Size:    fi.Size(),
-			Perm:    "0" + strconv.FormatUint(uint64(fi.Mode().Perm()), 8),
 			ModTime: fi.ModTime(),
-		})
+		}
+		fillMeta(&e, fi)
+		out = append(out, e)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].IsDir != out[j].IsDir {
@@ -110,6 +148,23 @@ func (f *FS) List(rel string) ([]Entry, error) {
 		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
 	})
 	return out, nil
+}
+
+// StatEntry returns metadata for a single path (for the properties/permissions
+// dialog). The entry itself is lstat'd via the directory listing semantics —
+// a symlink is reported as a link, not its target.
+func (f *FS) StatEntry(rel string) (Entry, error) {
+	n := norm(rel)
+	fi, err := f.root.Stat(n)
+	if err != nil {
+		return Entry{}, mapErr(err)
+	}
+	e := Entry{Name: path.Base(n), IsDir: fi.IsDir(), Size: fi.Size(), ModTime: fi.ModTime()}
+	if e.Name == "." {
+		e.Name = ""
+	}
+	fillMeta(&e, fi)
+	return e, nil
 }
 
 // IsDir reports whether rel is a directory.
@@ -191,13 +246,22 @@ func (f *FS) Rename(oldRel, newRel string) error {
 	return mapErr(f.root.Rename(o, nw))
 }
 
-// Chmod sets permissions from an octal string like "0644".
+// Chmod sets the rwx permissions from an octal string like "0644". The UI can
+// only express the 9 rwx bits, so any existing setuid/setgid/sticky bits are
+// PRESERVED — a plain chmod must never silently strip the setgid bit off a
+// group-shared directory. (New special bits still cannot be set here: the
+// input is capped at 0o777.)
 func (f *FS) Chmod(rel, octal string) error {
 	mode, err := strconv.ParseUint(strings.TrimSpace(octal), 8, 32)
 	if err != nil || mode > 0o777 {
 		return errors.New("invalid permissions")
 	}
-	return mapErr(f.root.Chmod(norm(rel), os.FileMode(mode)))
+	n := norm(rel)
+	special := os.FileMode(0)
+	if fi, e := f.root.Stat(n); e == nil {
+		special = fi.Mode() & (os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
+	}
+	return mapErr(f.root.Chmod(n, os.FileMode(mode)|special))
 }
 
 // Chown hands a path to a uid/gid (used to give panel-created files to the

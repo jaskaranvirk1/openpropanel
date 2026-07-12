@@ -61,4 +61,30 @@
   .opp-card {
     @apply rounded-2xl border border-zinc-200 bg-white shadow-sm;
   }
+
+  /* File explorer (built by static/files.js) ----------------------------- */
+  .opp-fm-menu {
+    @apply fixed z-50 min-w-[13rem] overflow-hidden rounded-xl border border-zinc-200 bg-white py-1 shadow-xl;
+  }
+  .opp-fm-overlay {
+    @apply fixed inset-0 z-40 grid place-items-center bg-zinc-900/30 p-4;
+  }
+  .opp-fm-card {
+    @apply w-full max-w-md rounded-2xl border border-zinc-200 bg-white p-5 shadow-2xl;
+  }
+  .opp-fm-drop {
+    @apply outline-dashed outline-2 outline-offset-2 outline-blue-400;
+  }
+  .opp-fm-toasts {
+    @apply fixed bottom-4 right-4 z-[60] flex flex-col gap-2;
+  }
+  .opp-fm-toast {
+    @apply rounded-lg px-4 py-2 text-sm text-white shadow-lg transition-opacity duration-300;
+  }
+  .opp-fm-toast-ok {
+    @apply bg-zinc-800;
+  }
+  .opp-fm-toast-bad {
+    @apply bg-red-600;
+  }
 }

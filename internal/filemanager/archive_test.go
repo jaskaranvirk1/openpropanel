@@ -6,6 +6,7 @@ import (
 	"hash/crc32"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -258,6 +259,84 @@ func TestUnzipByteCapIgnoresDeclaredSize(t *testing.T) {
 	}
 	if written > 2<<10 {
 		t.Errorf("declared-size lie let %d bytes through a 1 KiB budget", written)
+	}
+}
+
+// A plain chmod from the UI must keep an existing setgid bit (group-shared
+// doc roots rely on it) — the panel can't set special bits, but must not strip
+// ones already present.
+func TestChmodPreservesSetgid(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("special mode bits are only meaningful on Linux")
+	}
+	fs, root := newFS(t)
+	if err := fs.Mkdir("shared"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(root, "shared"), 0o2775); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Chmod("shared", "0750"); err != nil { // change rwx, keep setgid
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(filepath.Join(root, "shared"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSetgid == 0 {
+		t.Error("chmod stripped the setgid bit")
+	}
+	if fi.Mode().Perm() != 0o750 {
+		t.Errorf("rwx bits = %o, want 750", fi.Mode().Perm())
+	}
+}
+
+func TestPermString(t *testing.T) {
+	cases := map[os.FileMode]string{
+		0o644: "rw-r--r--",
+		0o755: "rwxr-xr-x",
+		0o600: "rw-------",
+		0o777: "rwxrwxrwx",
+		0o000: "---------",
+	}
+	for mode, want := range cases {
+		if got := permString(mode); got != want {
+			t.Errorf("permString(%o) = %q, want %q", mode, got, want)
+		}
+	}
+}
+
+func TestStatEntryAndListMeta(t *testing.T) {
+	fs, _ := newFS(t)
+	mustWrite(t, fs, "f.txt", "hi")
+	_ = fs.Chmod("f.txt", "0640") // Windows only honours the read-only bit
+
+	e, err := fs.StatEntry("f.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Name != "f.txt" || e.IsDir || e.Mode != "-" || len(e.Sym) != 9 {
+		t.Errorf("StatEntry = %+v", e)
+	}
+	if runtime.GOOS == "linux" && (e.Perm != "0640" || e.Sym != "rw-r-----") {
+		t.Errorf("StatEntry perms = %q / %q, want 0640 / rw-r-----", e.Perm, e.Sym)
+	}
+	// List must carry the same metadata for the same file.
+	entries, err := fs.List("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, le := range entries {
+		if le.Name == "f.txt" {
+			found = true
+			if le.Mode != "-" || len(le.Sym) != 9 {
+				t.Errorf("List entry meta = %+v", le)
+			}
+		}
+	}
+	if !found {
+		t.Error("f.txt missing from listing")
 	}
 }
 

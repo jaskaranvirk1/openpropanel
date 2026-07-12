@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"os"
 	osuser "os/user"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -19,8 +21,8 @@ import (
 const maxUploadBytes = 64 << 20 // 64 MiB
 
 type crumb struct {
-	Name string
-	Path string
+	Name string `json:"name"`
+	Path string `json:"path"`
 }
 
 type fileRow struct {
@@ -106,6 +108,36 @@ func (s *Server) getFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// In-site view: render the explorer SHELL. The rich listing (entries,
+	// sort, ownership, context menus) is driven client-side by files.js, which
+	// fetches GET /files/api/list — so navigating folders never reloads the page.
+	fs, site, ok := s.openFS(w, r)
+	if !ok {
+		return
+	}
+	fs.Close()
+	s.render.page(w, http.StatusOK, "files", pageData{
+		User: viewer, Active: "files",
+		Flash: r.URL.Query().Get("msg"), Error: r.URL.Query().Get("err"),
+		Data:  filesVM{Site: site, Path: cleanRel(r.FormValue("path"))},
+	})
+}
+
+// fileJSON is one directory entry as sent to the browser explorer.
+type fileJSON struct {
+	Name  string `json:"name"`
+	Dir   bool   `json:"dir"`
+	Link  bool   `json:"link"`
+	Size  int64  `json:"size"`
+	Perm  string `json:"perm"` // octal, e.g. "0644"
+	Sym   string `json:"sym"`  // symbolic, e.g. "rw-r--r--"
+	Owner string `json:"owner"`
+	Group string `json:"group"`
+	MTime int64  `json:"mtime"` // unix seconds
+}
+
+// getFilesList returns a directory listing as JSON for the explorer UI.
+func (s *Server) getFilesList(w http.ResponseWriter, r *http.Request) {
 	fs, site, ok := s.openFS(w, r)
 	if !ok {
 		return
@@ -115,36 +147,148 @@ func (s *Server) getFiles(w http.ResponseWriter, r *http.Request) {
 	if cur != "" && !fs.IsDir(cur) {
 		cur = ""
 	}
-
-	flash := r.URL.Query().Get("msg")
-	errMsg := r.URL.Query().Get("err")
 	entries, err := fs.List(cur)
 	if err != nil {
-		errMsg = userError(err)
-		entries = nil
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": userError(err)})
+		return
 	}
-
-	rows := make([]fileRow, 0, len(entries))
+	items := make([]fileJSON, 0, len(entries))
+	dirs, files, hidden := 0, 0, 0
 	for _, e := range entries {
-		rows = append(rows, fileRow{Entry: e, RelPath: path.Join(cur, e.Name)})
+		if strings.HasPrefix(e.Name, ".") {
+			hidden++
+		}
+		if e.IsDir {
+			dirs++
+		} else {
+			files++
+		}
+		items = append(items, fileJSON{
+			Name: e.Name, Dir: e.IsDir, Link: e.IsLink, Size: e.Size,
+			Perm: e.Perm, Sym: e.Sym, Owner: e.Owner, Group: e.Group, MTime: e.ModTime.Unix(),
+		})
 	}
-
 	parent := ""
 	if cur != "" {
-		parent = cleanRel(path.Dir(cur))
-		if parent == "." {
+		if parent = cleanRel(path.Dir(cur)); parent == "." {
 			parent = ""
 		}
 	}
-
-	s.render.page(w, http.StatusOK, "files", pageData{
-		User: viewer, Active: "files", Flash: flash, Error: errMsg,
-		Data: filesVM{
-			Site: site, Path: cur, Parent: parent, AtRoot: cur == "",
-			Crumbs: buildCrumbs(cur), Entries: rows,
-		},
+	writeJSON(w, http.StatusOK, map[string]any{
+		"path":     cur,
+		"parent":   parent,
+		"atRoot":   cur == "",
+		"crumbs":   buildCrumbs(cur),
+		"entries":  items,
+		"owners":   s.chownCandidateList(site),
+		"canChown": !s.cfg.Dev,
+		"counts":   map[string]int{"dirs": dirs, "files": files, "hidden": hidden},
 	})
 }
+
+// chownCandidateSet is the SAFE set of names a file in this site may be handed
+// to: the site's own system user and the web-server user. It deliberately
+// excludes root, other tenants, and every service account — a tenant (or an
+// admin acting on a tenant's files) must never be able to chown to an
+// arbitrary or privileged owner through the panel.
+func (s *Server) chownCandidateSet(site *store.Site) map[string]bool {
+	m := map[string]bool{}
+	if owner, err := s.store.UserByID(site.UserID); err == nil && owner.SystemUser != "" {
+		m[owner.SystemUser] = true
+	}
+	if wu := s.cfg.WebServerUser(); wu != "" {
+		m[wu] = true
+	}
+	return m
+}
+
+func (s *Server) chownCandidateList(site *store.Site) []string {
+	set := s.chownCandidateSet(site)
+	out := make([]string, 0, len(set))
+	for n := range set {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// postFilePermissions applies mode (chmod) and/or owner/group (chown) to one
+// entry. Ownership targets are validated against chownCandidateSet, so no form
+// value can aim an owner at root or another tenant.
+func (s *Server) postFilePermissions(w http.ResponseWriter, r *http.Request) {
+	fs, site, ok := s.openFS(w, r)
+	if !ok {
+		return
+	}
+	defer fs.Close()
+	dir := cleanRel(r.FormValue("path"))
+	name := r.FormValue("name")
+	if !validName(name) {
+		s.filesRedirect(w, r, site.ID, dir, "err", "Invalid name")
+		return
+	}
+	rel := path.Join(dir, name)
+	if mode := strings.TrimSpace(r.FormValue("mode")); mode != "" {
+		if err := fs.Chmod(rel, mode); err != nil {
+			s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+			return
+		}
+	}
+	owner := strings.TrimSpace(r.FormValue("owner"))
+	group := strings.TrimSpace(r.FormValue("group"))
+	if owner != "" || group != "" {
+		// The candidate allowlist is enforced ALWAYS (even in dev) so a
+		// disallowed owner is a hard error rather than a silent no-op; only the
+		// actual chown syscall is skipped off-Linux.
+		cands := s.chownCandidateSet(site)
+		uid, gid := -1, -1 // -1 = leave unchanged (POSIX chown)
+		if owner != "" {
+			if !cands[owner] {
+				s.filesRedirect(w, r, site.ID, dir, "err", "That owner is not allowed")
+				return
+			}
+			if !s.cfg.Dev {
+				u, err := osuser.Lookup(owner)
+				if err != nil {
+					s.filesRedirect(w, r, site.ID, dir, "err", "Owner not found on the system")
+					return
+				}
+				uid, _ = strconv.Atoi(u.Uid)
+			}
+		}
+		if group != "" {
+			if !cands[group] {
+				s.filesRedirect(w, r, site.ID, dir, "err", "That group is not allowed")
+				return
+			}
+			if !s.cfg.Dev {
+				g, err := osuser.LookupGroup(group)
+				if err != nil {
+					s.filesRedirect(w, r, site.ID, dir, "err", "Group not found on the system")
+					return
+				}
+				gid, _ = strconv.Atoi(g.Gid)
+			}
+		}
+		if !s.cfg.Dev {
+			if err := fs.Chown(rel, uid, gid); err != nil {
+				s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+				return
+			}
+		}
+	}
+	s.filesRedirect(w, r, site.ID, dir, "msg", "Permissions updated for "+name)
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// isAjax reports whether the request came from the explorer's fetch() calls
+// (which set X-OPP-Ajax) rather than a plain browser form submit.
+func isAjax(r *http.Request) bool { return r.Header.Get("X-OPP-Ajax") == "1" }
 
 func (s *Server) getFileEdit(w http.ResponseWriter, r *http.Request) {
 	fs, site, ok := s.openFS(w, r)
@@ -598,7 +742,18 @@ func userError(err error) string {
 	return "Operation failed"
 }
 
+// filesRedirect completes a file mutation. For the explorer's fetch() calls
+// (X-OPP-Ajax) it answers JSON so the page can refresh in place; for a plain
+// form submit it falls back to a Post/Redirect/Get with a flash.
 func (s *Server) filesRedirect(w http.ResponseWriter, r *http.Request, siteID int64, dir, kind, msg string) {
+	if isAjax(r) {
+		if kind == "err" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": msg})
+		} else {
+			writeJSON(w, http.StatusOK, map[string]any{"msg": msg})
+		}
+		return
+	}
 	v := url.Values{}
 	v.Set("site", strconv.FormatInt(siteID, 10))
 	if dir != "" {

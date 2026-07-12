@@ -119,8 +119,10 @@ func (s *Server) Handler() http.Handler {
 	app.HandleFunc("/phpmyadmin/", s.servePMA)
 
 	app.HandleFunc("GET /files", s.getFiles)
+	app.HandleFunc("GET /files/api/list", s.getFilesList)
 	app.HandleFunc("GET /files/edit", s.getFileEdit)
 	app.HandleFunc("GET /files/download", s.getFileDownload)
+	app.HandleFunc("POST /files/permissions", s.postFilePermissions)
 	app.HandleFunc("POST /files/save", s.postFileSave)
 	app.HandleFunc("POST /files/upload", s.postFileUpload)
 	app.HandleFunc("POST /files/mkdir", s.postFileMkdir)
