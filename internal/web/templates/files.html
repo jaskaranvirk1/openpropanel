@@ -1,17 +1,19 @@
 {{define "title"}}Files · Open ProPanel{{end}}
 
 {{define "content"}}
-{{if .Data.Site}}
-{{/* In-site view: a client-rendered explorer (static/files.js) that talks to
-     the jailed file API. The mount div carries the site id + initial path;
-     everything else — listing, sort, context menus, permissions — is built in
+{{if or .Data.Site (eq .Data.Scope "server")}}
+{{/* Explorer: a client-rendered file manager (static/files.js) over the jailed
+     file API. The mount div carries the scope (a site id, or the whole server)
+     + initial path; listing, sort, context menus and permissions are built in
      the browser. */}}
 <noscript>
   <div class="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
     The file manager needs JavaScript enabled.
   </div>
 </noscript>
-<div id="opp-fm" data-site="{{.Data.Site.ID}}" data-path="{{.Data.Path}}"></div>
+<div id="opp-fm"
+     {{if eq .Data.Scope "server"}}data-scope="server"{{else}}data-site="{{.Data.Site.ID}}"{{end}}
+     data-path="{{.Data.Path}}"></div>
 <script src="/static/files.js" defer></script>
 
 {{else}}

@@ -9,6 +9,8 @@ import (
 	"os"
 	osuser "os/user"
 	"path"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +20,41 @@ import (
 	"github.com/openpropanel/openpropanel/internal/store"
 )
 
+// fsScope is what a file-manager request operates on: either a single site's
+// jailed document root, or (admins only) the whole server filesystem.
+type fsScope struct {
+	Server bool
+	Site   *store.Site // nil in server mode
+}
+
+// query returns the URL params that re-identify this scope (site=<id> or
+// scope=server) for redirects and links.
+func (sc fsScope) query() url.Values {
+	v := url.Values{}
+	if sc.Server {
+		v.Set("scope", "server")
+	} else if sc.Site != nil {
+		v.Set("site", strconv.FormatInt(sc.Site.ID, 10))
+	}
+	return v
+}
+
+// serverRoot is the jail root for whole-server browsing. os.Root still confines
+// traversal to it, but at "/" that confines to the whole filesystem — the point
+// is uniform, symlink-safe path handling, not confinement (an admin is already
+// root-equivalent). On the dev host it maps to the current drive's root.
+func serverRoot() string {
+	if runtime.GOOS == "windows" {
+		if wd, err := os.Getwd(); err == nil {
+			if v := filepath.VolumeName(wd); v != "" {
+				return v + string(os.PathSeparator)
+			}
+		}
+		return `C:\`
+	}
+	return "/"
+}
+
 const maxUploadBytes = 64 << 20 // 64 MiB
 
 type crumb struct {
@@ -25,47 +62,58 @@ type crumb struct {
 	Path string `json:"path"`
 }
 
-type fileRow struct {
-	filemanager.Entry
-	RelPath string
-}
-
 type filesVM struct {
-	Site    *store.Site
-	Path    string // current directory (rel)
-	Parent  string // parent directory (rel), "" at root
-	AtRoot  bool
-	Crumbs  []crumb
-	Entries []fileRow
-	Sites   []*store.Site // populated for the chooser (when no Site is selected)
+	Site    *store.Site   // set for the in-site browser
+	Scope   string        // "server" for the whole-server browser, else ""
+	Path    string        // initial directory (rel)
+	Sites   []*store.Site // populated for the chooser (when no scope/site is selected)
 	IsAdmin bool
 }
 
 type fileEditVM struct {
-	Site    *store.Site
+	Title   string // site domain, or "Server"
 	Path    string // file rel
-	Dir     string // parent dir (return target)
 	Name    string
 	Content string
+	IDParam string // "site" | "scope" — the hidden field re-identifying the scope
+	IDValue string // site id | "server"
+	BackURL string
 }
 
-// openFS loads the site named by the "site" param, checks the caller may manage
-// it, and returns a filesystem jailed to that site's document root.
-func (s *Server) openFS(w http.ResponseWriter, r *http.Request) (*filemanager.FS, *store.Site, bool) {
+// openFS resolves the request's scope (a site's doc root, or the whole server
+// for an admin) and returns a filesystem jailed to it.
+func (s *Server) openFS(w http.ResponseWriter, r *http.Request) (*filemanager.FS, fsScope, bool) {
 	viewer := auth.UserFrom(r.Context())
+
+	// Whole-server browsing: admin only. Regular users can NEVER reach it and
+	// stay confined to their own sites.
+	if r.FormValue("scope") == "server" {
+		if viewer == nil || viewer.Role != store.RoleAdmin {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return nil, fsScope{}, false
+		}
+		fs, err := filemanager.New(serverRoot())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return nil, fsScope{}, false
+		}
+		return fs, fsScope{Server: true}, true
+	}
+
+	// Site-jailed browsing.
 	id, err := strconv.ParseInt(r.FormValue("site"), 10, 64)
 	if err != nil {
 		http.Error(w, "bad site id", http.StatusBadRequest)
-		return nil, nil, false
+		return nil, fsScope{}, false
 	}
 	site, err := s.store.SiteByID(id)
 	if err != nil {
 		http.Error(w, "site not found", http.StatusNotFound)
-		return nil, nil, false
+		return nil, fsScope{}, false
 	}
 	if viewer.Role != store.RoleAdmin && site.UserID != viewer.ID {
 		http.Error(w, "forbidden", http.StatusForbidden)
-		return nil, nil, false
+		return nil, fsScope{}, false
 	}
 	// Re-validate the doc root at open time (not just at creation): a non-admin
 	// whose doc root lives in a tenant-writable location could have swapped it
@@ -74,24 +122,28 @@ func (s *Server) openFS(w http.ResponseWriter, r *http.Request) (*filemanager.FS
 	root, err := s.domains.SafeDocRoot(site, viewer.Role == store.RoleAdmin)
 	if err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
-		return nil, nil, false
+		return nil, fsScope{}, false
 	}
 	fs, err := filemanager.New(root)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return nil, nil, false
+		return nil, fsScope{}, false
 	}
-	return fs, site, true
+	return fs, fsScope{Site: site}, true
 }
 
 func (s *Server) getFiles(w http.ResponseWriter, r *http.Request) {
 	viewer := auth.UserFrom(r.Context())
+	admin := viewer.Role == store.RoleAdmin
+	scope := r.FormValue("scope")
+	site := r.FormValue("site")
 
-	// No site selected -> show the chooser (browse any of your projects' files).
-	if r.FormValue("site") == "" {
+	// The site chooser: shown on request, or as a non-admin's landing page.
+	landing := scope == "" && site == ""
+	if r.FormValue("chooser") != "" || (landing && !admin) {
 		var sites []*store.Site
 		var err error
-		if viewer.Role == store.RoleAdmin {
+		if admin {
 			sites, err = s.store.ListSites()
 		} else {
 			sites, err = s.store.ListSitesByUser(viewer.ID)
@@ -103,15 +155,28 @@ func (s *Server) getFiles(w http.ResponseWriter, r *http.Request) {
 		s.render.page(w, http.StatusOK, "files", pageData{
 			User: viewer, Active: "files",
 			Flash: r.URL.Query().Get("msg"), Error: r.URL.Query().Get("err"),
-			Data:  filesVM{Sites: sites, IsAdmin: viewer.Role == store.RoleAdmin},
+			Data:  filesVM{Sites: sites, IsAdmin: admin},
 		})
 		return
 	}
 
-	// In-site view: render the explorer SHELL. The rich listing (entries,
-	// sort, ownership, context menus) is driven client-side by files.js, which
-	// fetches GET /files/api/list — so navigating folders never reloads the page.
-	fs, site, ok := s.openFS(w, r)
+	// Whole-server browser: an admin's default landing, or scope=server.
+	if scope == "server" || (landing && admin) {
+		if !admin {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		s.render.page(w, http.StatusOK, "files", pageData{
+			User: viewer, Active: "files",
+			Flash: r.URL.Query().Get("msg"), Error: r.URL.Query().Get("err"),
+			Data:  filesVM{Scope: "server", IsAdmin: admin, Path: cleanRel(r.FormValue("path"))},
+		})
+		return
+	}
+
+	// In-site view: render the explorer SHELL. The listing is driven client-side
+	// by files.js (GET /files/api/list) so navigating never reloads the page.
+	fs, sc, ok := s.openFS(w, r)
 	if !ok {
 		return
 	}
@@ -119,7 +184,7 @@ func (s *Server) getFiles(w http.ResponseWriter, r *http.Request) {
 	s.render.page(w, http.StatusOK, "files", pageData{
 		User: viewer, Active: "files",
 		Flash: r.URL.Query().Get("msg"), Error: r.URL.Query().Get("err"),
-		Data:  filesVM{Site: site, Path: cleanRel(r.FormValue("path"))},
+		Data:  filesVM{Site: sc.Site, IsAdmin: admin, Path: cleanRel(r.FormValue("path"))},
 	})
 }
 
@@ -138,7 +203,7 @@ type fileJSON struct {
 
 // getFilesList returns a directory listing as JSON for the explorer UI.
 func (s *Server) getFilesList(w http.ResponseWriter, r *http.Request) {
-	fs, site, ok := s.openFS(w, r)
+	fs, sc, ok := s.openFS(w, r)
 	if !ok {
 		return
 	}
@@ -180,21 +245,35 @@ func (s *Server) getFilesList(w http.ResponseWriter, r *http.Request) {
 		"atRoot":   cur == "",
 		"crumbs":   buildCrumbs(cur),
 		"entries":  items,
-		"owners":   s.chownCandidateList(site),
+		"owners":   s.chownCandidateList(sc),
 		"canChown": !s.cfg.Dev,
+		"server":   sc.Server,
 		"counts":   map[string]int{"dirs": dirs, "files": files, "hidden": hidden},
 	})
 }
 
-// chownCandidateSet is the SAFE set of names a file in this site may be handed
-// to: the site's own system user and the web-server user. It deliberately
-// excludes root, other tenants, and every service account — a tenant (or an
-// admin acting on a tenant's files) must never be able to chown to an
-// arbitrary or privileged owner through the panel.
-func (s *Server) chownCandidateSet(site *store.Site) map[string]bool {
+// chownCandidateSet is the set of names a file may be handed to. In SITE scope
+// it is deliberately tiny — the site's own system user and the web-server user
+// — so a tenant (or an admin acting on a tenant's files) can never chown to
+// root or another tenant. In SERVER scope (admin only) it widens to every
+// tenant's system user, the web user, and root, since an admin browsing the
+// whole box is already root-equivalent; it is still a fixed dropdown, never a
+// free-text field.
+func (s *Server) chownCandidateSet(sc fsScope) map[string]bool {
 	m := map[string]bool{}
-	if owner, err := s.store.UserByID(site.UserID); err == nil && owner.SystemUser != "" {
-		m[owner.SystemUser] = true
+	if sc.Server {
+		if users, err := s.store.ListUsers(); err == nil {
+			for _, u := range users {
+				if u.SystemUser != "" {
+					m[u.SystemUser] = true
+				}
+			}
+		}
+		m["root"] = true
+	} else if sc.Site != nil {
+		if owner, err := s.store.UserByID(sc.Site.UserID); err == nil && owner.SystemUser != "" {
+			m[owner.SystemUser] = true
+		}
 	}
 	if wu := s.cfg.WebServerUser(); wu != "" {
 		m[wu] = true
@@ -202,8 +281,8 @@ func (s *Server) chownCandidateSet(site *store.Site) map[string]bool {
 	return m
 }
 
-func (s *Server) chownCandidateList(site *store.Site) []string {
-	set := s.chownCandidateSet(site)
+func (s *Server) chownCandidateList(sc fsScope) []string {
+	set := s.chownCandidateSet(sc)
 	out := make([]string, 0, len(set))
 	for n := range set {
 		out = append(out, n)
@@ -216,7 +295,7 @@ func (s *Server) chownCandidateList(site *store.Site) []string {
 // entry. Ownership targets are validated against chownCandidateSet, so no form
 // value can aim an owner at root or another tenant.
 func (s *Server) postFilePermissions(w http.ResponseWriter, r *http.Request) {
-	fs, site, ok := s.openFS(w, r)
+	fs, sc, ok := s.openFS(w, r)
 	if !ok {
 		return
 	}
@@ -224,13 +303,13 @@ func (s *Server) postFilePermissions(w http.ResponseWriter, r *http.Request) {
 	dir := cleanRel(r.FormValue("path"))
 	name := r.FormValue("name")
 	if !validName(name) {
-		s.filesRedirect(w, r, site.ID, dir, "err", "Invalid name")
+		s.filesRedirect(w, r, sc, dir, "err", "Invalid name")
 		return
 	}
 	rel := path.Join(dir, name)
 	if mode := strings.TrimSpace(r.FormValue("mode")); mode != "" {
 		if err := fs.Chmod(rel, mode); err != nil {
-			s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+			s.filesRedirect(w, r, sc, dir, "err", userError(err))
 			return
 		}
 	}
@@ -240,17 +319,17 @@ func (s *Server) postFilePermissions(w http.ResponseWriter, r *http.Request) {
 		// The candidate allowlist is enforced ALWAYS (even in dev) so a
 		// disallowed owner is a hard error rather than a silent no-op; only the
 		// actual chown syscall is skipped off-Linux.
-		cands := s.chownCandidateSet(site)
+		cands := s.chownCandidateSet(sc)
 		uid, gid := -1, -1 // -1 = leave unchanged (POSIX chown)
 		if owner != "" {
 			if !cands[owner] {
-				s.filesRedirect(w, r, site.ID, dir, "err", "That owner is not allowed")
+				s.filesRedirect(w, r, sc, dir, "err", "That owner is not allowed")
 				return
 			}
 			if !s.cfg.Dev {
 				u, err := osuser.Lookup(owner)
 				if err != nil {
-					s.filesRedirect(w, r, site.ID, dir, "err", "Owner not found on the system")
+					s.filesRedirect(w, r, sc, dir, "err", "Owner not found on the system")
 					return
 				}
 				uid, _ = strconv.Atoi(u.Uid)
@@ -258,13 +337,13 @@ func (s *Server) postFilePermissions(w http.ResponseWriter, r *http.Request) {
 		}
 		if group != "" {
 			if !cands[group] {
-				s.filesRedirect(w, r, site.ID, dir, "err", "That group is not allowed")
+				s.filesRedirect(w, r, sc, dir, "err", "That group is not allowed")
 				return
 			}
 			if !s.cfg.Dev {
 				g, err := osuser.LookupGroup(group)
 				if err != nil {
-					s.filesRedirect(w, r, site.ID, dir, "err", "Group not found on the system")
+					s.filesRedirect(w, r, sc, dir, "err", "Group not found on the system")
 					return
 				}
 				gid, _ = strconv.Atoi(g.Gid)
@@ -272,12 +351,12 @@ func (s *Server) postFilePermissions(w http.ResponseWriter, r *http.Request) {
 		}
 		if !s.cfg.Dev {
 			if err := fs.Chown(rel, uid, gid); err != nil {
-				s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+				s.filesRedirect(w, r, sc, dir, "err", userError(err))
 				return
 			}
 		}
 	}
-	s.filesRedirect(w, r, site.ID, dir, "msg", "Permissions updated for "+name)
+	s.filesRedirect(w, r, sc, dir, "msg", "Permissions updated for "+name)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -291,7 +370,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func isAjax(r *http.Request) bool { return r.Header.Get("X-OPP-Ajax") == "1" }
 
 func (s *Server) getFileEdit(w http.ResponseWriter, r *http.Request) {
-	fs, site, ok := s.openFS(w, r)
+	fs, sc, ok := s.openFS(w, r)
 	if !ok {
 		return
 	}
@@ -300,45 +379,76 @@ func (s *Server) getFileEdit(w http.ResponseWriter, r *http.Request) {
 	rel := cleanRel(r.FormValue("path"))
 	content, err := fs.ReadText(rel)
 	if err != nil {
-		s.filesRedirect(w, r, site.ID, dirOf(rel), "err", userError(err))
+		s.filesRedirect(w, r, sc, dirOf(rel), "err", userError(err))
 		return
+	}
+	title := "Server"
+	if sc.Site != nil {
+		title = sc.Site.Domain
 	}
 	s.render.page(w, http.StatusOK, "fileedit", pageData{
 		User: viewer, Active: "files",
-		Data: fileEditVM{Site: site, Path: rel, Dir: dirOf(rel), Name: path.Base(rel), Content: content},
+		Data: fileEditVM{
+			Title: title, Path: rel, Name: path.Base(rel), Content: content,
+			IDParam: idParam(sc), IDValue: idValue(sc), BackURL: "/files?" + withPath(sc.query(), dirOf(rel)),
+		},
 	})
 }
 
+// idParam/idValue name the hidden form field that re-identifies the scope on
+// the editor's save POST; withPath appends the return directory to a query.
+func idParam(sc fsScope) string {
+	if sc.Server {
+		return "scope"
+	}
+	return "site"
+}
+func idValue(sc fsScope) string {
+	if sc.Server {
+		return "server"
+	}
+	if sc.Site != nil {
+		return strconv.FormatInt(sc.Site.ID, 10)
+	}
+	return ""
+}
+func withPath(v url.Values, dir string) string {
+	if dir != "" {
+		v.Set("path", dir)
+	}
+	return v.Encode()
+}
+
 func (s *Server) postFileSave(w http.ResponseWriter, r *http.Request) {
-	fs, site, ok := s.openFS(w, r)
+	fs, sc, ok := s.openFS(w, r)
 	if !ok {
 		return
 	}
 	defer fs.Close()
 	rel := cleanRel(r.FormValue("path"))
 	if err := fs.WriteText(rel, normalizeNewlines(r.FormValue("content"))); err != nil {
-		s.filesRedirect(w, r, site.ID, dirOf(rel), "err", userError(err))
+		s.filesRedirect(w, r, sc, dirOf(rel), "err", userError(err))
 		return
 	}
-	s.chownToSite(fs, site, rel)
-	s.filesRedirect(w, r, site.ID, dirOf(rel), "msg", path.Base(rel)+" saved")
+	s.chownToScope(fs, sc, rel)
+	s.filesRedirect(w, r, sc, dirOf(rel), "msg", path.Base(rel)+" saved")
 }
 
 func (s *Server) postFileUpload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
-	fs, site, ok := s.openFS(w, r)
+	fs, sc, ok := s.openFS(w, r)
 	if !ok {
 		return
 	}
 	defer fs.Close()
 	dir := cleanRel(r.FormValue("path"))
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		s.filesRedirect(w, r, site.ID, dir, "err", "Upload too large or malformed")
+		s.filesRedirect(w, r, sc, dir, "err", "Upload too large or malformed")
 		return
 	}
 	headers := r.MultipartForm.File["file"]
 	if len(headers) == 0 {
-		s.filesRedirect(w, r, site.ID, dir, "err", "No file provided")
+		s.filesRedirect(w, r, sc, dir, "err", "No file provided")
 		return
 	}
 	var saved []string
@@ -350,25 +460,25 @@ func (s *Server) postFileUpload(w http.ResponseWriter, r *http.Request) {
 		rel, err := fs.SaveUploadReader(dir, header.Filename, file)
 		file.Close()
 		if err != nil {
-			s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+			s.filesRedirect(w, r, sc, dir, "err", userError(err))
 			return
 		}
-		s.chownToSite(fs, site, rel)
+		s.chownToScope(fs, sc,rel)
 		saved = append(saved, path.Base(rel))
 	}
 	if len(saved) == 0 {
-		s.filesRedirect(w, r, site.ID, dir, "err", "No file could be read from the upload")
+		s.filesRedirect(w, r, sc, dir, "err", "No file could be read from the upload")
 		return
 	}
 	msg := "Uploaded " + saved[0]
 	if len(saved) > 1 {
 		msg = "Uploaded " + strconv.Itoa(len(saved)) + " files"
 	}
-	s.filesRedirect(w, r, site.ID, dir, "msg", msg)
+	s.filesRedirect(w, r, sc, dir, "msg", msg)
 }
 
 func (s *Server) postFileMkdir(w http.ResponseWriter, r *http.Request) {
-	fs, site, ok := s.openFS(w, r)
+	fs, sc, ok := s.openFS(w, r)
 	if !ok {
 		return
 	}
@@ -376,20 +486,20 @@ func (s *Server) postFileMkdir(w http.ResponseWriter, r *http.Request) {
 	dir := cleanRel(r.FormValue("path"))
 	name := r.FormValue("name")
 	if !validName(name) {
-		s.filesRedirect(w, r, site.ID, dir, "err", "Invalid folder name")
+		s.filesRedirect(w, r, sc, dir, "err", "Invalid folder name")
 		return
 	}
 	rel := path.Join(dir, name)
 	if err := fs.Mkdir(rel); err != nil {
-		s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+		s.filesRedirect(w, r, sc, dir, "err", userError(err))
 		return
 	}
-	s.chownToSite(fs, site, rel)
-	s.filesRedirect(w, r, site.ID, dir, "msg", "Folder "+name+" created")
+	s.chownToScope(fs, sc,rel)
+	s.filesRedirect(w, r, sc, dir, "msg", "Folder "+name+" created")
 }
 
 func (s *Server) postFileNew(w http.ResponseWriter, r *http.Request) {
-	fs, site, ok := s.openFS(w, r)
+	fs, sc, ok := s.openFS(w, r)
 	if !ok {
 		return
 	}
@@ -397,20 +507,20 @@ func (s *Server) postFileNew(w http.ResponseWriter, r *http.Request) {
 	dir := cleanRel(r.FormValue("path"))
 	name := r.FormValue("name")
 	if !validName(name) {
-		s.filesRedirect(w, r, site.ID, dir, "err", "Invalid file name")
+		s.filesRedirect(w, r, sc, dir, "err", "Invalid file name")
 		return
 	}
 	rel := path.Join(dir, name)
 	if err := fs.CreateFile(rel); err != nil {
-		s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+		s.filesRedirect(w, r, sc, dir, "err", userError(err))
 		return
 	}
-	s.chownToSite(fs, site, rel)
-	s.filesRedirect(w, r, site.ID, dir, "msg", "File "+name+" created")
+	s.chownToScope(fs, sc,rel)
+	s.filesRedirect(w, r, sc, dir, "msg", "File "+name+" created")
 }
 
 func (s *Server) postFileDelete(w http.ResponseWriter, r *http.Request) {
-	fs, site, ok := s.openFS(w, r)
+	fs, sc, ok := s.openFS(w, r)
 	if !ok {
 		return
 	}
@@ -418,18 +528,18 @@ func (s *Server) postFileDelete(w http.ResponseWriter, r *http.Request) {
 	dir := cleanRel(r.FormValue("path"))
 	name := r.FormValue("name")
 	if !validName(name) {
-		s.filesRedirect(w, r, site.ID, dir, "err", "Invalid name")
+		s.filesRedirect(w, r, sc, dir, "err", "Invalid name")
 		return
 	}
 	if err := fs.Delete(path.Join(dir, name)); err != nil {
-		s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+		s.filesRedirect(w, r, sc, dir, "err", userError(err))
 		return
 	}
-	s.filesRedirect(w, r, site.ID, dir, "msg", name+" deleted")
+	s.filesRedirect(w, r, sc, dir, "msg", name+" deleted")
 }
 
 func (s *Server) postFileRename(w http.ResponseWriter, r *http.Request) {
-	fs, site, ok := s.openFS(w, r)
+	fs, sc, ok := s.openFS(w, r)
 	if !ok {
 		return
 	}
@@ -438,19 +548,19 @@ func (s *Server) postFileRename(w http.ResponseWriter, r *http.Request) {
 	name := r.FormValue("name")
 	newName := r.FormValue("new_name")
 	if !validName(name) || !validName(newName) {
-		s.filesRedirect(w, r, site.ID, dir, "err", "Invalid name")
+		s.filesRedirect(w, r, sc, dir, "err", "Invalid name")
 		return
 	}
 	if err := fs.Rename(path.Join(dir, name), path.Join(dir, newName)); err != nil {
-		s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+		s.filesRedirect(w, r, sc, dir, "err", userError(err))
 		return
 	}
-	s.filesRedirect(w, r, site.ID, dir, "msg", "Renamed to "+newName)
+	s.filesRedirect(w, r, sc, dir, "msg", "Renamed to "+newName)
 }
 
 // postFileMove moves an entry into another directory within the same jail.
 func (s *Server) postFileMove(w http.ResponseWriter, r *http.Request) {
-	fs, site, ok := s.openFS(w, r)
+	fs, sc, ok := s.openFS(w, r)
 	if !ok {
 		return
 	}
@@ -459,20 +569,20 @@ func (s *Server) postFileMove(w http.ResponseWriter, r *http.Request) {
 	name := r.FormValue("name")
 	dest := cleanRel(r.FormValue("dest")) // target directory, relative to the jail root
 	if !validName(name) {
-		s.filesRedirect(w, r, site.ID, dir, "err", "Invalid name")
+		s.filesRedirect(w, r, sc, dir, "err", "Invalid name")
 		return
 	}
 	if err := fs.Rename(path.Join(dir, name), path.Join(dest, name)); err != nil {
-		s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+		s.filesRedirect(w, r, sc, dir, "err", userError(err))
 		return
 	}
-	s.filesRedirect(w, r, site.ID, dir, "msg", name+" moved to /"+dest)
+	s.filesRedirect(w, r, sc, dir, "msg", name+" moved to /"+dest)
 }
 
 // postFileCopy duplicates an entry into another directory (blank = current).
 // A same-directory copy gets a "-copy" suffix so it never collides.
 func (s *Server) postFileCopy(w http.ResponseWriter, r *http.Request) {
-	fs, site, ok := s.openFS(w, r)
+	fs, sc, ok := s.openFS(w, r)
 	if !ok {
 		return
 	}
@@ -481,7 +591,7 @@ func (s *Server) postFileCopy(w http.ResponseWriter, r *http.Request) {
 	name := r.FormValue("name")
 	dest := cleanRel(r.FormValue("dest"))
 	if !validName(name) {
-		s.filesRedirect(w, r, site.ID, dir, "err", "Invalid name")
+		s.filesRedirect(w, r, sc, dir, "err", "Invalid name")
 		return
 	}
 	targetName := name
@@ -491,16 +601,16 @@ func (s *Server) postFileCopy(w http.ResponseWriter, r *http.Request) {
 	}
 	target := path.Join(dest, targetName)
 	if err := fs.CopyEntry(path.Join(dir, name), target); err != nil {
-		s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+		s.filesRedirect(w, r, sc, dir, "err", userError(err))
 		return
 	}
-	s.chownTreeToSite(fs, site, target)
-	s.filesRedirect(w, r, site.ID, dir, "msg", "Copied "+name+" to /"+path.Join(dest, targetName))
+	s.chownTreeToScope(fs, sc, target)
+	s.filesRedirect(w, r, sc, dir, "msg", "Copied "+name+" to /"+path.Join(dest, targetName))
 }
 
 // postFileZip archives the selected entries of the current directory.
 func (s *Server) postFileZip(w http.ResponseWriter, r *http.Request) {
-	fs, site, ok := s.openFS(w, r)
+	fs, sc, ok := s.openFS(w, r)
 	if !ok {
 		return
 	}
@@ -508,7 +618,7 @@ func (s *Server) postFileZip(w http.ResponseWriter, r *http.Request) {
 	dir := cleanRel(r.FormValue("path"))
 	names, ok := selectedNames(r)
 	if !ok {
-		s.filesRedirect(w, r, site.ID, dir, "err", "Select at least one file or folder")
+		s.filesRedirect(w, r, sc, dir, "err", "Select at least one file or folder")
 		return
 	}
 	archive := strings.TrimSpace(r.FormValue("archive"))
@@ -519,21 +629,21 @@ func (s *Server) postFileZip(w http.ResponseWriter, r *http.Request) {
 		archive += ".zip"
 	}
 	if !validName(archive) {
-		s.filesRedirect(w, r, site.ID, dir, "err", "Invalid archive name")
+		s.filesRedirect(w, r, sc, dir, "err", "Invalid archive name")
 		return
 	}
 	target := path.Join(dir, archive)
 	if err := fs.Zip(dir, names, target); err != nil {
-		s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+		s.filesRedirect(w, r, sc, dir, "err", userError(err))
 		return
 	}
-	s.chownToSite(fs, site, target)
-	s.filesRedirect(w, r, site.ID, dir, "msg", "Created "+archive+" ("+strconv.Itoa(len(names))+" item(s))")
+	s.chownToScope(fs, sc,target)
+	s.filesRedirect(w, r, sc, dir, "msg", "Created "+archive+" ("+strconv.Itoa(len(names))+" item(s))")
 }
 
 // postFileUnzip extracts a .zip into the current directory.
 func (s *Server) postFileUnzip(w http.ResponseWriter, r *http.Request) {
-	fs, site, ok := s.openFS(w, r)
+	fs, sc, ok := s.openFS(w, r)
 	if !ok {
 		return
 	}
@@ -541,7 +651,7 @@ func (s *Server) postFileUnzip(w http.ResponseWriter, r *http.Request) {
 	dir := cleanRel(r.FormValue("path"))
 	name := r.FormValue("name")
 	if !validName(name) {
-		s.filesRedirect(w, r, site.ID, dir, "err", "Invalid name")
+		s.filesRedirect(w, r, sc, dir, "err", "Invalid name")
 		return
 	}
 	created, err := fs.Unzip(path.Join(dir, name), dir)
@@ -549,21 +659,21 @@ func (s *Server) postFileUnzip(w http.ResponseWriter, r *http.Request) {
 	// PHP can manage the files that did land. Resolve the tenant uid/gid ONCE
 	// (it is loop-invariant) rather than per entry — an archive can hold
 	// thousands of files.
-	if uid, gid, ok := s.siteTenantIDs(site); ok {
+	if uid, gid, ok := s.tenantIDsFor(sc); ok {
 		for _, rel := range created {
 			_ = fs.Chown(rel, uid, gid)
 		}
 	}
 	if err != nil {
-		s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+		s.filesRedirect(w, r, sc, dir, "err", userError(err))
 		return
 	}
-	s.filesRedirect(w, r, site.ID, dir, "msg", "Extracted "+name+" ("+strconv.Itoa(len(created))+" item(s))")
+	s.filesRedirect(w, r, sc, dir, "msg", "Extracted "+name+" ("+strconv.Itoa(len(created))+" item(s))")
 }
 
 // postBulkDelete removes every selected entry of the current directory.
 func (s *Server) postBulkDelete(w http.ResponseWriter, r *http.Request) {
-	fs, site, ok := s.openFS(w, r)
+	fs, sc, ok := s.openFS(w, r)
 	if !ok {
 		return
 	}
@@ -571,21 +681,21 @@ func (s *Server) postBulkDelete(w http.ResponseWriter, r *http.Request) {
 	dir := cleanRel(r.FormValue("path"))
 	names, ok := selectedNames(r)
 	if !ok {
-		s.filesRedirect(w, r, site.ID, dir, "err", "Select at least one file or folder")
+		s.filesRedirect(w, r, sc, dir, "err", "Select at least one file or folder")
 		return
 	}
 	for _, name := range names {
 		if err := fs.Delete(path.Join(dir, name)); err != nil {
-			s.filesRedirect(w, r, site.ID, dir, "err", name+": "+userError(err))
+			s.filesRedirect(w, r, sc, dir, "err", name+": "+userError(err))
 			return
 		}
 	}
-	s.filesRedirect(w, r, site.ID, dir, "msg", strconv.Itoa(len(names))+" item(s) deleted")
+	s.filesRedirect(w, r, sc, dir, "msg", strconv.Itoa(len(names))+" item(s) deleted")
 }
 
 // postBulkMove moves every selected entry into another directory.
 func (s *Server) postBulkMove(w http.ResponseWriter, r *http.Request) {
-	fs, site, ok := s.openFS(w, r)
+	fs, sc, ok := s.openFS(w, r)
 	if !ok {
 		return
 	}
@@ -594,16 +704,16 @@ func (s *Server) postBulkMove(w http.ResponseWriter, r *http.Request) {
 	dest := cleanRel(r.FormValue("dest"))
 	names, ok := selectedNames(r)
 	if !ok {
-		s.filesRedirect(w, r, site.ID, dir, "err", "Select at least one file or folder")
+		s.filesRedirect(w, r, sc, dir, "err", "Select at least one file or folder")
 		return
 	}
 	for _, name := range names {
 		if err := fs.Rename(path.Join(dir, name), path.Join(dest, name)); err != nil {
-			s.filesRedirect(w, r, site.ID, dir, "err", name+": "+userError(err))
+			s.filesRedirect(w, r, sc, dir, "err", name+": "+userError(err))
 			return
 		}
 	}
-	s.filesRedirect(w, r, site.ID, dir, "msg", strconv.Itoa(len(names))+" item(s) moved to /"+dest)
+	s.filesRedirect(w, r, sc, dir, "msg", strconv.Itoa(len(names))+" item(s) moved to /"+dest)
 }
 
 // selectedNames returns the validated multi-select checkbox values.
@@ -620,7 +730,7 @@ func selectedNames(r *http.Request) ([]string, bool) {
 }
 
 func (s *Server) postFileChmod(w http.ResponseWriter, r *http.Request) {
-	fs, site, ok := s.openFS(w, r)
+	fs, sc, ok := s.openFS(w, r)
 	if !ok {
 		return
 	}
@@ -628,14 +738,14 @@ func (s *Server) postFileChmod(w http.ResponseWriter, r *http.Request) {
 	dir := cleanRel(r.FormValue("path"))
 	name := r.FormValue("name")
 	if !validName(name) {
-		s.filesRedirect(w, r, site.ID, dir, "err", "Invalid name")
+		s.filesRedirect(w, r, sc, dir, "err", "Invalid name")
 		return
 	}
 	if err := fs.Chmod(path.Join(dir, name), r.FormValue("mode")); err != nil {
-		s.filesRedirect(w, r, site.ID, dir, "err", userError(err))
+		s.filesRedirect(w, r, sc, dir, "err", userError(err))
 		return
 	}
-	s.filesRedirect(w, r, site.ID, dir, "msg", "Permissions updated for "+name)
+	s.filesRedirect(w, r, sc, dir, "msg", "Permissions updated for "+name)
 }
 
 func (s *Server) getFileDownload(w http.ResponseWriter, r *http.Request) {
@@ -678,27 +788,28 @@ func contentDisposition(name string) string {
 // helpers
 // ---------------------------------------------------------------------------
 
-// chownToSite hands a panel-created path to the site's system user so the
-// account's PHP (which runs as that user) can read/write it. No-op in dev or
-// when the account has no system user.
-func (s *Server) chownToSite(fs *filemanager.FS, site *store.Site, rel string) {
-	if uid, gid, ok := s.siteTenantIDs(site); ok {
+// chownToScope hands a panel-created path to the site's system user so the
+// account's PHP (which runs as that user) can read/write it. No-op in dev, in
+// server scope (no single tenant — files stay root-owned for the admin to
+// assign), or when the account has no system user.
+func (s *Server) chownToScope(fs *filemanager.FS, sc fsScope, rel string) {
+	if uid, gid, ok := s.tenantIDsFor(sc); ok {
 		_ = fs.Chown(rel, uid, gid)
 	}
 }
 
-// chownTreeToSite is chownToSite for a whole subtree (copied folders).
-func (s *Server) chownTreeToSite(fs *filemanager.FS, site *store.Site, rel string) {
-	if uid, gid, ok := s.siteTenantIDs(site); ok {
+// chownTreeToScope is chownToScope for a whole subtree (copied folders).
+func (s *Server) chownTreeToScope(fs *filemanager.FS, sc fsScope, rel string) {
+	if uid, gid, ok := s.tenantIDsFor(sc); ok {
 		_ = fs.ChownTree(rel, uid, gid)
 	}
 }
 
-func (s *Server) siteTenantIDs(site *store.Site) (uid, gid int, ok bool) {
-	if s.cfg.Dev {
+func (s *Server) tenantIDsFor(sc fsScope) (uid, gid int, ok bool) {
+	if s.cfg.Dev || sc.Server || sc.Site == nil {
 		return 0, 0, false
 	}
-	owner, err := s.store.UserByID(site.UserID)
+	owner, err := s.store.UserByID(sc.Site.UserID)
 	if err != nil || owner.SystemUser == "" {
 		return 0, 0, false
 	}
@@ -745,7 +856,7 @@ func userError(err error) string {
 // filesRedirect completes a file mutation. For the explorer's fetch() calls
 // (X-OPP-Ajax) it answers JSON so the page can refresh in place; for a plain
 // form submit it falls back to a Post/Redirect/Get with a flash.
-func (s *Server) filesRedirect(w http.ResponseWriter, r *http.Request, siteID int64, dir, kind, msg string) {
+func (s *Server) filesRedirect(w http.ResponseWriter, r *http.Request, sc fsScope, dir, kind, msg string) {
 	if isAjax(r) {
 		if kind == "err" {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": msg})
@@ -754,8 +865,7 @@ func (s *Server) filesRedirect(w http.ResponseWriter, r *http.Request, siteID in
 		}
 		return
 	}
-	v := url.Values{}
-	v.Set("site", strconv.FormatInt(siteID, 10))
+	v := sc.query()
 	if dir != "" {
 		v.Set("path", dir)
 	}
@@ -781,11 +891,10 @@ func dirOf(rel string) string {
 	return d
 }
 
+// buildCrumbs returns just the path segments (the client renders the root
+// icon itself), so "var/www" -> [{var, var}, {www, var/www}].
 func buildCrumbs(cur string) []crumb {
-	crumbs := []crumb{{Name: "home", Path: ""}}
-	if cur == "" {
-		return crumbs
-	}
+	var crumbs []crumb
 	acc := ""
 	for _, part := range strings.Split(cur, "/") {
 		if part == "" {

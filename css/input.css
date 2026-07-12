@@ -87,4 +87,14 @@
   .opp-fm-toast-bad {
     @apply bg-red-600;
   }
+  /* Floating bulk-action bar — fixed so it never shifts the listing. */
+  .opp-fm-actionbar {
+    @apply fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-zinc-200 bg-white px-4 py-2 text-zinc-800 shadow-2xl;
+  }
+  .opp-fm-abtn {
+    @apply rounded-lg px-2.5 py-1 text-xs font-medium text-zinc-700 transition hover:bg-zinc-100;
+  }
+  .opp-fm-abtn-danger {
+    @apply text-red-600 hover:bg-red-50;
+  }
 }

@@ -4,19 +4,19 @@
 <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
   <div class="min-w-0">
     <h1 class="truncate text-2xl font-semibold tracking-tight text-zinc-900">{{.Data.Name}}</h1>
-    <p class="truncate font-mono text-sm text-zinc-500">{{.Data.Site.Domain}} · /{{.Data.Path}}</p>
+    <p class="truncate font-mono text-sm text-zinc-500">{{.Data.Title}} · /{{.Data.Path}}</p>
   </div>
-  <a href="/files?site={{.Data.Site.ID}}&path={{.Data.Dir}}" class="text-sm text-zinc-500 hover:text-blue-600">&larr; Back to files</a>
+  <a href="{{.Data.BackURL}}" class="text-sm text-zinc-500 hover:text-blue-600">&larr; Back to files</a>
 </div>
 
 <form method="post" action="/files/save" class="opp-card p-5">
-  <input type="hidden" name="site" value="{{.Data.Site.ID}}">
+  <input type="hidden" name="{{.Data.IDParam}}" value="{{.Data.IDValue}}">
   <input type="hidden" name="path" value="{{.Data.Path}}">
   <textarea name="content" spellcheck="false"
             class="block h-[62vh] w-full resize-y rounded-lg border border-zinc-200 bg-zinc-50 p-4 font-mono text-sm leading-relaxed text-zinc-800 focus:border-blue-600 focus:outline-none">{{.Data.Content}}</textarea>
   <div class="mt-4 flex items-center gap-2">
     <button type="submit" class="opp-btn-primary">Save</button>
-    <a href="/files?site={{.Data.Site.ID}}&path={{.Data.Dir}}" class="opp-btn">Cancel</a>
+    <a href="{{.Data.BackURL}}" class="opp-btn">Cancel</a>
   </div>
 </form>
 {{end}}
