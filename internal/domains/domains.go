@@ -463,10 +463,22 @@ func (s *Service) IssuePanelCert(ctx context.Context, rawHost string) (certFile,
 	if err != nil {
 		return "", "", "", err
 	}
-	webroot := filepath.Join(s.cfg.DataDir, "acme-webroot")
+	// The HTTP-01 challenge file must be readable by the WEB-SERVER user (Apache/
+	// nginx), which fetches it for the ACME CA. The data dir is deliberately
+	// root-only (0700 — it holds the session key, SQLite store and TLS keys), so
+	// serving the challenge from there makes the web server return 403 (and on
+	// SELinux hosts /var/lib content is not httpd-readable at all). Serve it from
+	// under the web root instead — world-traversable and httpd_sys_content_t —
+	// exactly like the per-site SSL path that already works.
+	webroot := filepath.Join(s.cfg.WebRoot, "openpropanel-acme")
 	if err = os.MkdirAll(filepath.Join(webroot, ".well-known", "acme-challenge"), 0o755); err != nil {
 		return "", "", "", err
 	}
+	// MkdirAll honours the process umask, which can strip the o+rx the web server
+	// needs to traverse in; force the public, traversable bits on the tree.
+	_ = os.Chmod(webroot, 0o755)
+	_ = os.Chmod(filepath.Join(webroot, ".well-known"), 0o755)
+	_ = os.Chmod(filepath.Join(webroot, ".well-known", "acme-challenge"), 0o755)
 	if err = s.web().WritePanelChallengeVHost(host, webroot); err != nil {
 		return "", "", "", err
 	}
