@@ -94,7 +94,8 @@ tar -xzf "$TMP/${ASSET}" -C "$TMP"
 if [ -n "$PKG" ]; then
     # MariaDB is installed by default so the Databases + phpMyAdmin features work
     # out of the box; set PROPANEL_NO_DB=1 to skip it (add it later anytime).
-    REQUIRED="httpd mod_ssl php-fpm certbot firewalld"
+    # git + openssh-clients power "Deploy from GitHub" (clone/fetch as the tenant).
+    REQUIRED="httpd mod_ssl php-fpm certbot firewalld git openssh-clients"
     [ "${PROPANEL_NO_DB:-0}" = "1" ] || REQUIRED="$REQUIRED mariadb-server"
     missing=""
     for pkg in $REQUIRED; do

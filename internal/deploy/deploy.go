@@ -207,11 +207,20 @@ func (m *Manager) gitEnv(keyPath, knownHosts string) []string {
 		"GIT_SSH_COMMAND=" + ssh,
 	}
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "PATH=") || strings.HasPrefix(kv, "HOME=") ||
-			strings.HasPrefix(kv, "LANG=") || strings.HasPrefix(kv, "LC_") ||
-			strings.HasPrefix(kv, "TERM=") {
+		if strings.HasPrefix(kv, "PATH=") || strings.HasPrefix(kv, "LANG=") ||
+			strings.HasPrefix(kv, "LC_") || strings.HasPrefix(kv, "TERM=") {
 			env = append(env, kv)
 		}
+	}
+	// The panel runs as root but git/ssh run as the tenant, so root's HOME must
+	// not leak through: ssh would try to read /root/.ssh/config as the tenant
+	// and abort on the permission error. Point HOME at the per-call key dir
+	// (tenant-owned) for ssh modes, or a neutral root for plain-https clones
+	// (git's config lookups are already pinned to /dev/null above).
+	if keyPath != "" {
+		env = append(env, "HOME="+filepath.Dir(keyPath))
+	} else {
+		env = append(env, "HOME=/")
 	}
 	return env
 }

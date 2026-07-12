@@ -59,6 +59,11 @@ func Run(cfg *config.Config, cfgPath string) int {
 		} else {
 			warn("certbot not found", "automatic Let's Encrypt SSL is disabled — dnf install -y certbot")
 		}
+		if _, err := exec.LookPath("git"); err == nil {
+			ok("git present", "")
+		} else {
+			warn("git not found", "Deploy from GitHub is disabled — dnf install -y git")
+		}
 		if system.ServiceActive(ctx, "firewalld") {
 			ok("firewalld active", "")
 		} else {

@@ -106,6 +106,11 @@ func TestClassify(t *testing.T) {
 	if !errors.As(err, &ue) || !strings.Contains(ue.Msg, "Deploy keys") {
 		t.Errorf("publickey failure should classify to deploy-key guidance, got %v", err)
 	}
+	// git missing entirely (minimal AlmaLinux) must self-diagnose in the UI.
+	err = Classify(errors.New(`exec: "git": executable file not found in $PATH`))
+	if !errors.As(err, &ue) || !strings.Contains(ue.Msg, "dnf install -y git") {
+		t.Errorf("missing git should classify to an install hint, got %v", err)
+	}
 	if raw := Classify(errors.New("some unknown failure")); errors.As(raw, &ue) {
 		t.Error("unknown errors must pass through unclassified")
 	}

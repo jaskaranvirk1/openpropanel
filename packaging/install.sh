@@ -37,7 +37,8 @@ done
 
 log "Checking runtime dependencies (installing only what is missing)"
 # MariaDB installed by default (Databases + phpMyAdmin); PROPANEL_NO_DB=1 to skip.
-REQUIRED="httpd mod_ssl php-fpm certbot firewalld"
+# git + openssh-clients power "Deploy from GitHub" (clone/fetch as the tenant).
+REQUIRED="httpd mod_ssl php-fpm certbot firewalld git openssh-clients"
 [ "${PROPANEL_NO_DB:-0}" = "1" ] || REQUIRED="$REQUIRED mariadb-server"
 missing=""
 for pkg in $REQUIRED; do

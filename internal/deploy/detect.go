@@ -76,6 +76,8 @@ func Classify(err error) error {
 	}
 	s := err.Error()
 	switch {
+	case strings.Contains(s, "executable file not found"):
+		return &UserError{Msg: "git is not installed on this server — run: dnf install -y git — then deploy again.", Raw: err}
 	case strings.Contains(s, "Permission denied (publickey"):
 		return &UserError{Msg: "GitHub rejected the connection — the deploy key has not been added yet. On GitHub open the repository → Settings → Deploy keys, add the key shown on this card, then deploy again.", Raw: err}
 	case strings.Contains(s, "Repository not found"):

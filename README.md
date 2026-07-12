@@ -52,7 +52,7 @@ Tailwind CSS and HTMX) is compiled into the binary with `go:embed`.
 
 ## Requirements
 
-- **Server:** AlmaLinux / RHEL 9 or 10 (or any systemd distro with `httpd`, `php-fpm`, `certbot`).
+- **Server:** AlmaLinux / RHEL 9 or 10 (or any systemd distro with `httpd`, `php-fpm`, `certbot`, `git`). The installer installs whichever of these are missing.
 - **Build:** Go 1.23+ and Node (for the Tailwind CLI). Both are only needed to build; the shipped binary needs neither.
 
 > A control panel manages system services, so it must run **on the server** with

@@ -42,7 +42,7 @@ nfpms:
     license: MIT
     homepage: "https://github.com/jaskaranvirk1/openpropanel"
     bindir: /usr/local/bin
-    dependencies: [httpd, mod_ssl, php-fpm, certbot]
+    dependencies: [httpd, mod_ssl, php-fpm, certbot, git, openssh-clients]
     contents:
       - src: packaging/openpropanel.service
         dst: /etc/systemd/system/openpropanel.service
