@@ -153,45 +153,46 @@ func (m *Manager) IsPublic(ctx context.Context, owner, name string) (public, sur
 	}
 }
 
-// ensureKnownHosts writes the pinned host keys to the data dir once.
-func (m *Manager) ensureKnownHosts() (string, error) {
-	if err := os.MkdirAll(m.deployRoot(), 0o700); err != nil {
-		return "", err
-	}
-	p := filepath.Join(m.deployRoot(), "known_hosts")
-	if _, err := os.Stat(p); err != nil {
-		if werr := os.WriteFile(p, []byte(pinnedKnownHosts), 0o644); werr != nil {
-			return "", werr
-		}
-	}
-	return p, nil
-}
-
-// tenantKey copies a repo's private key to a short-lived temp file readable by
-// the tenant uid, returning its path and a cleanup func. Used only for the
-// lifetime of one git call.
-func (m *Manager) tenantKey(repoID int64, uid, gid uint32) (string, func(), error) {
+// tenantKey copies a repo's private key AND the pinned github.com known_hosts
+// into a short-lived temp dir readable by the tenant uid, returning their
+// paths and a cleanup func. Both must live OUTSIDE the root-only data dir:
+// git/ssh run as the tenant, and a known_hosts it cannot traverse to reads as
+// empty — strict host checking then refuses every connection ("No ED25519
+// host key is known for github.com"). Used only for one git call's lifetime.
+func (m *Manager) tenantKey(repoID int64, uid, gid uint32) (keyPath, knownHosts string, cleanup func(), err error) {
 	b, err := os.ReadFile(m.keyPath(repoID))
 	if err != nil {
-		return "", nil, fmt.Errorf("deploy key missing (regenerate it): %w", err)
+		return "", "", nil, fmt.Errorf("deploy key missing (regenerate it): %w", err)
 	}
 	dir, err := os.MkdirTemp("", "opp-deploy-")
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
+	}
+	fail := func(e error) (string, string, func(), error) {
+		_ = os.RemoveAll(dir)
+		return "", "", nil, e
 	}
 	kp := filepath.Join(dir, "key")
 	if err := os.WriteFile(kp, b, 0o600); err != nil {
-		_ = os.RemoveAll(dir)
-		return "", nil, err
+		return fail(err)
+	}
+	kh := filepath.Join(dir, "known_hosts")
+	if err := os.WriteFile(kh, []byte(pinnedKnownHosts), 0o644); err != nil {
+		return fail(err)
 	}
 	_ = os.Chown(kp, int(uid), int(gid))
+	_ = os.Chown(kh, int(uid), int(gid))
 	_ = os.Chown(dir, int(uid), int(gid))
-	return kp, func() { _ = os.RemoveAll(dir) }, nil
+	return kp, kh, func() { _ = os.RemoveAll(dir) }, nil
 }
 
-// gitEnv builds a hardened environment for a git-over-ssh call.
+// gitEnv builds a hardened environment for a git-over-ssh call. knownHosts may
+// be empty for public-HTTPS clones, where ssh never runs.
 func (m *Manager) gitEnv(keyPath, knownHosts string) []string {
-	ssh := "ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=15 -o UserKnownHostsFile=" + shellQuote(knownHosts)
+	ssh := "ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=15"
+	if knownHosts != "" {
+		ssh += " -o UserKnownHostsFile=" + shellQuote(knownHosts)
+	}
 	if keyPath != "" {
 		ssh += " -i " + shellQuote(keyPath)
 	}
@@ -226,20 +227,16 @@ func (m *Manager) gitEnv(keyPath, knownHosts string) []string {
 }
 
 // runGit runs git as the tenant with hardening flags and (for SSH modes) the
-// repo's deploy key.
+// repo's deploy key + pinned host keys.
 func (m *Manager) runGit(ctx context.Context, r *store.Repo, uid, gid uint32, dir string, args ...string) (string, error) {
-	known, err := m.ensureKnownHosts()
-	if err != nil {
-		return "", err
-	}
-	keyPath := ""
+	keyPath, known := "", ""
 	if r.AuthMode != AuthPublic {
-		kp, cleanup, kerr := m.tenantKey(r.ID, uid, gid)
+		kp, kh, cleanup, kerr := m.tenantKey(r.ID, uid, gid)
 		if kerr != nil {
 			return "", kerr
 		}
 		defer cleanup()
-		keyPath = kp
+		keyPath, known = kp, kh
 	}
 	full := []string{"-c", "credential.helper=", "-c", "protocol.ext.allow=never"}
 	if dir != "" {

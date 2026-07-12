@@ -84,6 +84,8 @@ func Classify(err error) error {
 		return &UserError{Msg: "GitHub reports the repository was not found. For a private repository this usually means the deploy key was added to a DIFFERENT repository (or not at all) — check the key is on this exact repo, and the owner/name are right.", Raw: err}
 	case strings.Contains(s, "Could not resolve hostname"), strings.Contains(s, "Connection timed out"), strings.Contains(s, "Connection refused"):
 		return &UserError{Msg: "Could not reach github.com from this server — check the server's outbound network and DNS.", Raw: err}
+	case strings.Contains(s, "Host key verification failed"), strings.Contains(s, "host key is known"):
+		return &UserError{Msg: "Could not verify github.com's identity against the pinned host keys — if GitHub recently rotated its SSH keys, update Open ProPanel to a release with the new keys.", Raw: err}
 	}
 	return err
 }

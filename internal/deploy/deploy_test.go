@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -60,6 +61,39 @@ func TestGenerateKeyProducesValidOpenSSHKeys(t *testing.T) {
 	}
 	if _, err := ssh.ParsePrivateKey(b); err != nil {
 		t.Errorf("private key does not parse: %v", err)
+	}
+}
+
+// The tenant runs git/ssh, so BOTH the deploy key and the pinned known_hosts
+// must be staged somewhere the tenant can read — never only under the
+// root-only data dir (ssh treats an unreadable known_hosts as empty and strict
+// checking then refuses every connection).
+func TestTenantKeyStagesKeyAndKnownHosts(t *testing.T) {
+	m := New(&config.Config{DataDir: t.TempDir()})
+	if _, _, err := m.GenerateKey(7); err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	kp, kh, cleanup, err := m.tenantKey(7, 1000, 1000)
+	if err != nil {
+		t.Fatalf("tenantKey: %v", err)
+	}
+	defer cleanup()
+	if filepath.Dir(kp) != filepath.Dir(kh) {
+		t.Errorf("key %q and known_hosts %q should share one temp dir", kp, kh)
+	}
+	if strings.HasPrefix(kp, m.cfg.DataDir) {
+		t.Errorf("staged material must live outside the root-only data dir, got %q", kp)
+	}
+	b, err := os.ReadFile(kh)
+	if err != nil {
+		t.Fatalf("read staged known_hosts: %v", err)
+	}
+	if string(b) != pinnedKnownHosts {
+		t.Error("staged known_hosts must contain the pinned github.com host keys")
+	}
+	cleanup()
+	if _, err := os.Stat(filepath.Dir(kp)); !os.IsNotExist(err) {
+		t.Error("cleanup must remove the temp dir")
 	}
 }
 
