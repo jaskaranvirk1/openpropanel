@@ -37,13 +37,13 @@
 @layer components {
   /* Buttons -------------------------------------------------------------- */
   .opp-btn {
-    @apply inline-flex items-center justify-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 shadow-sm transition hover:bg-zinc-50 hover:text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30;
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 shadow-sm transition hover:bg-zinc-50 hover:text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30;
   }
   .opp-btn-primary {
-    @apply inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40;
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40;
   }
   .opp-btn-danger {
-    @apply inline-flex items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-600 shadow-sm transition hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/30;
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-medium text-red-600 shadow-sm transition hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/30;
   }
 
   /* Form controls -------------------------------------------------------- */
@@ -89,7 +89,7 @@
   }
   /* Floating bulk-action bar — fixed so it never shifts the listing. */
   .opp-fm-actionbar {
-    @apply fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-zinc-200 bg-white px-4 py-2 text-zinc-800 shadow-2xl;
+    @apply fixed bottom-4 left-1/2 z-40 flex max-w-[calc(100vw-1.5rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-1.5 rounded-2xl border border-zinc-200 bg-white px-3 py-2 text-zinc-800 shadow-2xl sm:bottom-6 sm:rounded-full sm:px-4;
   }
   .opp-fm-abtn {
     @apply rounded-lg px-2.5 py-1 text-xs font-medium text-zinc-700 transition hover:bg-zinc-100;

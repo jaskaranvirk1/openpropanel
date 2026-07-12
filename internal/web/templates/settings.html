@@ -38,7 +38,7 @@
 <div class="opp-card mb-6 p-5">
   <div class="mb-1 flex flex-wrap items-center justify-between gap-2">
     <h2 class="text-sm font-semibold text-zinc-900">Panel HTTPS</h2>
-    <span class="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-0.5 text-xs text-zinc-600">
+    <span class="min-w-0 max-w-full truncate rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-0.5 text-xs text-zinc-600">
       current cert: {{.Data.CertKind}}{{if .Data.PanelHostname}} · {{.Data.PanelHostname}}{{end}}
     </span>
   </div>
@@ -67,7 +67,7 @@
     <h2 class="mb-1 text-sm font-semibold text-zinc-900">Let's Encrypt</h2>
     <p class="mb-4 text-xs text-zinc-500">Contact email used when requesting certificates. Required before enabling SSL.</p>
     <form method="post" action="/settings" class="flex flex-wrap items-end gap-3">
-      <div class="min-w-[240px] flex-1">
+      <div class="w-full sm:min-w-[240px] sm:flex-1">
         <label class="opp-lbl">ACME email</label>
         <input name="acme_email" type="email" value="{{.Data.ACMEEmail}}" placeholder="admin@example.com"
                class="opp-input">
@@ -80,9 +80,9 @@
   <div class="opp-card p-5">
     <h2 class="mb-4 text-sm font-semibold text-zinc-900">Environment</h2>
     <dl class="space-y-3 text-sm">
-      <div class="flex justify-between gap-4"><dt class="text-zinc-500">Listen address</dt><dd class="font-mono text-zinc-700">{{.Data.ListenAddr}}</dd></div>
-      <div class="flex justify-between gap-4"><dt class="text-zinc-500">Web root</dt><dd class="font-mono text-zinc-700">{{.Data.WebRoot}}</dd></div>
-      <div class="flex justify-between gap-4"><dt class="text-zinc-500">Web server</dt><dd class="font-mono text-zinc-700 capitalize">{{.Data.WebServer}}</dd></div>
+      <div class="flex min-w-0 justify-between gap-4"><dt class="shrink-0 text-zinc-500">Listen address</dt><dd class="min-w-0 break-all text-right font-mono text-zinc-700">{{.Data.ListenAddr}}</dd></div>
+      <div class="flex min-w-0 justify-between gap-4"><dt class="shrink-0 text-zinc-500">Web root</dt><dd class="min-w-0 break-all text-right font-mono text-zinc-700">{{.Data.WebRoot}}</dd></div>
+      <div class="flex min-w-0 justify-between gap-4"><dt class="shrink-0 text-zinc-500">Web server</dt><dd class="min-w-0 break-all text-right font-mono capitalize text-zinc-700">{{.Data.WebServer}}</dd></div>
     </dl>
   </div>
 </div>

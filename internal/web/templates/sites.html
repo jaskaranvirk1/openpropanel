@@ -71,7 +71,7 @@
 <div id="repobox-{{$r.ID}}" class="rounded-xl border border-zinc-200 bg-zinc-50 p-4"
      {{if $busy}}hx-get="/repos/{{$r.ID}}/card" hx-trigger="load delay:3s" hx-swap="outerHTML"{{end}}>
   <div class="flex flex-wrap items-center gap-2 text-xs text-zinc-500">
-    <a href="https://github.com/{{$r.Owner}}/{{$r.Name}}" target="_blank" rel="noopener" class="font-mono text-zinc-700 hover:text-blue-600">{{$r.Owner}}/{{$r.Name}}@{{$r.Branch}}</a>
+    <a href="https://github.com/{{$r.Owner}}/{{$r.Name}}" target="_blank" rel="noopener" class="min-w-0 break-all font-mono text-zinc-700 hover:text-blue-600">{{$r.Owner}}/{{$r.Name}}@{{$r.Branch}}</a>
     {{if $busy}}
       <span class="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 font-semibold text-blue-700">{{if eq $r.LastStatus "cloning"}}cloning…{{else}}deploying…{{end}}</span>
       <span>this card updates automatically</span>
@@ -124,12 +124,12 @@
   <details class="mt-3">
     <summary class="cursor-pointer list-none text-xs font-medium text-zinc-700 hover:text-blue-600">⚡ Auto-deploy on push (webhook)</summary>
     <div class="mt-2 space-y-2 text-xs text-zinc-600">
-      <p>Deploy automatically every time you <code class="rounded bg-zinc-100 px-1">git push</code>. On GitHub open the repo → Settings → Webhooks → <em>Add webhook</em>:</p>
+      <p>Deploy automatically every time you <code class="break-all rounded bg-zinc-100 px-1">git push</code>. On GitHub open the repo → Settings → Webhooks → <em>Add webhook</em>:</p>
       <ol class="list-decimal space-y-1 pl-5">
-        <li>Payload URL: <code class="rounded bg-zinc-100 px-1">https://{{$host}}/hooks/github/{{$r.ID}}</code>
+        <li>Payload URL: <code class="break-all rounded bg-zinc-100 px-1">https://{{$host}}/hooks/github/{{$r.ID}}</code>
             <button type="button" class="opp-btn" data-copy="https://{{$host}}/hooks/github/{{$r.ID}}" onclick="navigator.clipboard.writeText(this.dataset.copy);this.textContent='Copied ✓';setTimeout(()=>{this.textContent='Copy'},1500)">Copy</button></li>
         <li><strong>Content type: application/json</strong> (GitHub defaults to the other one — change it).</li>
-        <li>Secret: <code class="rounded bg-zinc-100 px-1">{{$r.WebhookSecret}}</code>
+        <li>Secret: <code class="break-all rounded bg-zinc-100 px-1">{{$r.WebhookSecret}}</code>
             <button type="button" class="opp-btn" data-copy="{{$r.WebhookSecret}}" onclick="navigator.clipboard.writeText(this.dataset.copy);this.textContent='Copied ✓';setTimeout(()=>{this.textContent='Copy'},1500)">Copy</button></li>
         <li>Events: <em>Just the push event</em>.</li>
       </ol>
@@ -256,10 +256,10 @@ async function oppBrowse(repoID, siteID, startPath) {
 <section id="project-{{$pid}}" class="opp-card overflow-hidden">
   <div class="flex items-center gap-3 border-b border-zinc-200 bg-zinc-50 px-5 py-4">
     <div class="min-w-0 flex-1">
-      <a href="https://{{.Site.Domain}}" target="_blank" rel="noopener" class="text-sm font-semibold text-zinc-900 hover:text-blue-600">{{.Site.Domain}}</a>
+      <a href="https://{{.Site.Domain}}" target="_blank" rel="noopener" class="block truncate text-sm font-semibold text-zinc-900 hover:text-blue-600">{{.Site.Domain}}</a>
       <div class="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
         {{if eq .Site.Source "imported"}}<span class="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-700">imported</span>{{end}}
-        {{with .Repo}}<a href="https://github.com/{{.Owner}}/{{.Name}}" target="_blank" rel="noopener" class="rounded border border-zinc-200 bg-zinc-50 px-2 py-0.5 font-mono text-[11px] text-zinc-600 hover:border-zinc-300">{{.Owner}}/{{.Name}}@{{.Branch}}</a>{{end}}
+        {{with .Repo}}<a href="https://github.com/{{.Owner}}/{{.Name}}" target="_blank" rel="noopener" class="max-w-full truncate rounded border border-zinc-200 bg-zinc-50 px-2 py-0.5 font-mono text-[11px] text-zinc-600 hover:border-zinc-300">{{.Owner}}/{{.Name}}@{{.Branch}}</a>{{end}}
         <span>{{len .Subs}} subdomain{{if ne (len .Subs) 1}}s{{end}}</span>
         {{if $.Data.IsAdmin}}<span>· {{.OwnerName}}</span>{{end}}
       </div>
@@ -277,9 +277,9 @@ async function oppBrowse(repoID, siteID, startPath) {
     <details>
       <summary class="cursor-pointer list-none text-sm text-zinc-700 hover:text-blue-600">+ Add subdomain</summary>
       <form method="post" action="/sites/{{$pid}}/subdomains" class="mt-3 flex flex-wrap items-end gap-2">
-        <div class="flex items-center overflow-hidden rounded-lg border border-zinc-200 bg-white">
-          <input name="label" required placeholder="blog" pattern="[a-z0-9-]+" class="w-24 bg-transparent px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none">
-          <span class="pr-3 text-sm text-zinc-500">.{{.Site.Domain}}</span>
+        <div class="flex min-w-0 max-w-full items-center overflow-hidden rounded-lg border border-zinc-200 bg-white">
+          <input name="label" required placeholder="blog" pattern="[a-z0-9-]+" class="w-24 shrink-0 bg-transparent px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none">
+          <span class="truncate pr-3 text-sm text-zinc-500">.{{.Site.Domain}}</span>
         </div>
         <input name="doc_root" placeholder="folder · optional" class="opp-input min-w-[160px] flex-1">
         <button class="opp-btn">Add</button>

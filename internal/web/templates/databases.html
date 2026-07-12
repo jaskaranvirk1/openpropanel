@@ -94,7 +94,7 @@
   <div class="opp-card p-5">
     <div class="flex flex-wrap items-center gap-3">
       <div class="min-w-0 flex-1">
-        <span class="font-mono text-sm font-medium text-zinc-900">{{.DB.Name}}</span>
+        <span class="break-all font-mono text-sm font-medium text-zinc-900">{{.DB.Name}}</span>
         {{if $.Data.IsAdmin}}<span class="ml-2 text-xs text-zinc-400">owner: {{.OwnerName}}</span>{{end}}
       </div>
       <form method="post" action="/databases/{{.DB.ID}}/delete" onsubmit="return confirm('Drop database {{.DB.Name}}? This permanently deletes its data.')">
@@ -120,12 +120,12 @@
       {{end}}
 
       {{if .Available}}
-      <form method="post" action="/db-grants" class="ml-auto flex items-center gap-2">
+      <form method="post" action="/db-grants" class="flex w-full items-center gap-2 sm:ml-auto sm:w-auto">
         <input type="hidden" name="database_id" value="{{$dbid}}">
-        <select name="db_user_id" class="opp-select">
+        <select name="db_user_id" class="opp-select min-w-0 max-w-full flex-1 sm:flex-none">
           {{range .Available}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
         </select>
-        <button class="opp-btn">Grant</button>
+        <button class="opp-btn shrink-0">Grant</button>
       </form>
       {{end}}
     </div>
@@ -141,11 +141,11 @@
 <div class="space-y-2">
 {{range .Data.DBUsers}}
   <div class="opp-card flex flex-wrap items-center gap-3 px-5 py-3">
-    <span class="font-mono text-sm text-zinc-900">{{.User.Name}}</span>
+    <span class="min-w-0 break-all font-mono text-sm text-zinc-900">{{.User.Name}}</span>
     {{if $.Data.IsAdmin}}<span class="text-xs text-zinc-400">owner: {{.OwnerName}}</span>{{end}}
-    <form method="post" action="/db-users/{{.User.ID}}/password" class="ml-auto flex items-center gap-2">
-      <input name="password" type="password" required minlength="8" placeholder="new password" class="opp-input w-36">
-      <button class="opp-btn">Reset password</button>
+    <form method="post" action="/db-users/{{.User.ID}}/password" class="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto">
+      <input name="password" type="password" required minlength="8" placeholder="new password" class="opp-input w-full sm:w-36">
+      <button class="opp-btn shrink-0">Reset password</button>
     </form>
     <form method="post" action="/db-users/{{.User.ID}}/delete" onsubmit="return confirm('Delete database user {{.User.Name}}?')">
       <button class="opp-btn-danger">Delete</button>

@@ -74,7 +74,7 @@
     {{range .Services}}
     <div class="flex flex-wrap items-center gap-3 px-5 py-3.5 hover:bg-zinc-50">
       <div class="flex min-w-0 flex-1 items-center gap-3">
-        <span class="font-mono text-sm text-zinc-700">{{.Unit}}</span>
+        <span class="min-w-0 truncate font-mono text-sm text-zinc-700">{{.Unit}}</span>
         {{template "pill" .Active}}
         {{if .Enabled}}<span class="text-xs text-zinc-400">boot</span>{{end}}
       </div>

@@ -207,7 +207,7 @@
     items.forEach(function (it) {
       if (it === '-') { menuEl.append(el('div', { class: 'my-1 border-t border-zinc-100' })); return; }
       menuEl.append(el('button', {
-        class: 'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm ' +
+        class: 'flex w-full items-center gap-2 px-3 py-2 text-left text-sm ' +
           (it.disabled ? 'cursor-default text-zinc-300' : (it.danger ? 'text-red-600 hover:bg-red-50' : 'text-zinc-700 hover:bg-zinc-100')),
         onclick: function () { if (it.disabled) return; closeMenu(); it.run(); }
       }, it.label));
@@ -407,7 +407,7 @@
 
     var upBtn = el('button', { class: 'opp-btn', title: 'Up one level', onclick: goUp, html: ICON.up });
     if (state.atRoot) upBtn.disabled = true, upBtn.className += ' opacity-40';
-    var titleRow = el('div', { class: 'mb-3 flex items-center gap-2' },
+    var titleRow = el('div', { class: 'mb-3 flex flex-wrap items-center gap-2' },
       upBtn, crumbs, el('div', { class: 'flex-1' }),
       SERVER ? el('span', { class: 'rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700', text: 'whole server' }) : null,
       el('a', { href: '/files?chooser=1', class: 'text-xs text-zinc-500 hover:text-blue-600', text: SERVER ? 'Sites →' : '← All sites' }));
@@ -469,7 +469,7 @@
   }
 
   function tile(e) {
-    var cb = el('input', { type: 'checkbox', class: 'absolute left-1.5 top-1.5 h-3.5 w-3.5 opacity-0 transition group-hover:opacity-100', title: 'Select' });
+    var cb = el('input', { type: 'checkbox', class: 'absolute left-1.5 top-1.5 h-4 w-4 opacity-0 transition group-hover:opacity-100 max-sm:opacity-100', title: 'Select' });
     cb.addEventListener('click', function (ev) { ev.stopPropagation(); });
     cb.addEventListener('change', function () { toggle(e.name); paintSelection(); });
     var t = el('div', {
@@ -486,19 +486,23 @@
     return t;
   }
 
+  // On phones the list collapses to checkbox · name · size; owner/modified/
+  // perms appear from md up (they're always available in the permissions
+  // dialog). GRID_COLS must match the visible cells at each breakpoint.
+  var GRID_COLS = 'grid-cols-[auto_1fr_auto] md:grid-cols-[auto_1fr_88px_110px_120px_96px]';
   function listTable(vis) {
-    var headCb = el('input', { type: 'checkbox', class: 'h-3.5 w-3.5' });
+    var headCb = el('input', { type: 'checkbox', class: 'h-4 w-4' });
     headCb.addEventListener('change', function () { state.sel = {}; if (headCb.checked) vis.forEach(function (e) { state.sel[e.name] = true; }); paintSelection(); });
-    var head = el('div', { class: 'grid grid-cols-[auto_1fr_88px_110px_120px_96px] items-center gap-3 border-b border-zinc-200 bg-zinc-50 px-4 py-2 text-xs font-medium uppercase tracking-wide text-zinc-400' },
-      headCb, sortHead('Name', 'name'), sortHead('Size', 'size'), sortHead('Owner', 'owner'), sortHead('Modified', 'mtime'), sortHead('Perms', 'perm'));
+    var head = el('div', { class: 'grid ' + GRID_COLS + ' items-center gap-3 border-b border-zinc-200 bg-zinc-50 px-4 py-2 text-xs font-medium uppercase tracking-wide text-zinc-400' },
+      headCb, sortHead('Name', 'name', ''), sortHead('Size', 'size', ''), sortHead('Owner', 'owner', 'hidden md:flex'), sortHead('Modified', 'mtime', 'hidden md:flex'), sortHead('Perms', 'perm', 'hidden md:flex'));
     var body = el('div', { class: 'divide-y divide-zinc-100' });
     vis.forEach(function (e) { body.append(listRow(e)); });
     state.headCb = headCb;
     return el('div', { id: 'opp-fm-inner', class: 'overflow-hidden rounded-2xl border border-zinc-200 bg-white' }, head, body);
   }
-  function sortHead(label, key) {
+  function sortHead(label, key, extra) {
     var active = state.sortKey === key;
-    return el('button', { class: 'flex items-center gap-1 text-left uppercase ' + (active ? 'text-blue-600' : 'hover:text-zinc-700'), onclick: function () {
+    return el('button', { class: 'flex items-center gap-1 text-left uppercase ' + (extra ? extra + ' ' : '') + (active ? 'text-blue-600' : 'hover:text-zinc-700'), onclick: function () {
       if (state.sortKey === key) state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
       else { state.sortKey = key; state.sortDir = 'asc'; }
       localStorage.setItem('opp-fm-sortk', state.sortKey); localStorage.setItem('opp-fm-sortd', state.sortDir);
@@ -506,22 +510,22 @@
     } }, label, active ? (state.sortDir === 'asc' ? '↑' : '↓') : '');
   }
   function listRow(e) {
-    var cb = el('input', { type: 'checkbox', class: 'h-3.5 w-3.5' });
+    var cb = el('input', { type: 'checkbox', class: 'h-4 w-4' });
     cb.addEventListener('click', function (ev) { ev.stopPropagation(); });
     cb.addEventListener('change', function () { toggle(e.name); paintSelection(); });
     var name = el('button', { class: 'truncate text-left text-zinc-800 hover:text-blue-600 hover:underline', text: e.name, onclick: function (ev) { ev.stopPropagation(); if (ev.shiftKey || ev.ctrlKey || ev.metaKey) onItemClick(e, ev); else openEntry(e); } });
     var row = el('div', {
-      class: 'opp-fm-item grid cursor-default grid-cols-[auto_1fr_88px_110px_120px_96px] items-center gap-3 px-4 py-2 text-sm hover:bg-zinc-50',
+      class: 'opp-fm-item grid cursor-default ' + GRID_COLS + ' items-center gap-3 px-4 py-2.5 text-sm hover:bg-zinc-50',
       onclick: function (ev) { if (ev.target === cb || ev.target === name) return; onItemClick(e, ev); },
       oncontextmenu: function (ev) { onItemContext(e, ev); }
     },
       cb,
       el('div', { class: 'flex min-w-0 items-center gap-2' },
         el('div', { class: 'h-5 w-5 shrink-0 ' + (e.dir ? 'text-blue-500' : (e.link ? 'text-teal-500' : 'text-zinc-400')), html: iconFor(e) }), name),
-      el('span', { class: 'text-zinc-500', text: e.dir ? '—' : hsize(e.size) }),
-      el('span', { class: 'truncate text-zinc-500', text: e.owner || '—' }),
-      el('span', { class: 'text-zinc-500', text: ago(e.mtime) }),
-      el('span', { class: 'font-mono text-xs text-zinc-500', text: e.sym }));
+      el('span', { class: 'text-right text-zinc-500 md:text-left', text: e.dir ? '—' : hsize(e.size) }),
+      el('span', { class: 'hidden truncate text-zinc-500 md:block', text: e.owner || '—' }),
+      el('span', { class: 'hidden text-zinc-500 md:block', text: ago(e.mtime) }),
+      el('span', { class: 'hidden font-mono text-xs text-zinc-500 md:block', text: e.sym }));
     state.rendered.push({ name: e.name, node: row, cb: cb });
     return row;
   }

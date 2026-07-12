@@ -67,11 +67,11 @@
   <!-- Main column -->
   <div class="flex min-w-0 flex-1 flex-col">
     <!-- Mobile top bar -->
-    <header class="flex h-14 items-center justify-between border-b border-zinc-200 bg-white px-4 md:hidden">
-      <span class="text-base font-semibold text-zinc-900">Open <span class="text-blue-600">ProPanel</span></span>
-      <form method="post" action="/logout"><button class="text-sm text-zinc-500">Sign out</button></form>
+    <header class="flex h-14 items-center justify-between gap-3 border-b border-zinc-200 bg-white px-4 md:hidden">
+      <span class="min-w-0 truncate text-base font-semibold text-zinc-900">Open <span class="text-blue-600">ProPanel</span></span>
+      <form method="post" action="/logout" class="shrink-0"><button class="text-sm text-zinc-500">Sign out</button></form>
     </header>
-    <nav class="flex gap-1 overflow-x-auto border-b border-zinc-200 bg-white px-3 py-2 md:hidden">
+    <nav class="flex gap-1 overflow-x-auto border-b border-zinc-200 bg-white px-3 py-2 md:hidden [&>a]:shrink-0 [&>a]:whitespace-nowrap [&>a]:py-2.5">
       <a href="/dashboard" class="{{navClass .Active "dashboard"}}">Dashboard</a>
       <a href="/sites" class="{{navClass .Active "sites"}}">Projects</a>
       <a href="/databases" class="{{navClass .Active "databases"}}">Databases</a>
@@ -82,7 +82,7 @@
       {{end}}
     </nav>
 
-    <main class="flex-1 overflow-y-auto p-6 lg:p-10">
+    <main class="flex-1 overflow-y-auto overflow-x-hidden p-4 sm:p-6 lg:p-10">
       <div class="mx-auto max-w-6xl">
         {{template "flash" .}}
         {{block "content" .}}{{end}}
