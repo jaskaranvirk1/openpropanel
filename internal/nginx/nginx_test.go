@@ -51,6 +51,25 @@ func TestNginxServingModes(t *testing.T) {
 	}
 }
 
+// Proxy mode forwards to a hard-coded 127.0.0.1:<port> loopback target; the
+// ^~ ACME location out-ranks the proxy location so certbot keeps working.
+func TestNginxProxyMode(t *testing.T) {
+	vh := webserver.VHost{Domain: "app.com", DocRoot: "/srv/app", Mode: "proxy", Port: 3123, SSL: true, CertFile: "/c", KeyFile: "/k"}
+	out := renderNginx(t, vh)
+	if !strings.Contains(out, "proxy_pass http://127.0.0.1:3123;") {
+		t.Error("proxy mode should proxy_pass to the loopback app port")
+	}
+	if !strings.Contains(out, "location ^~ /.well-known/acme-challenge/ {") {
+		t.Error("proxy mode must keep the higher-priority ACME challenge location")
+	}
+	if strings.Contains(out, "fastcgi_pass") {
+		t.Error("proxy mode should not run PHP")
+	}
+	if strings.Contains(out, "proxy_pass http://app.com") {
+		t.Error("proxy target must be 127.0.0.1, not the domain")
+	}
+}
+
 // A tenant-owned symlink inside a doc root (e.g. a git checkout swapped for a
 // link into another tenant's tree) must never be followed: both the :80 and
 // :443 server blocks need disable_symlinks (mirrors Apache's

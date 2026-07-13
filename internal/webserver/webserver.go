@@ -16,9 +16,12 @@ type VHost struct {
 	CertFile    string // fullchain.pem
 	KeyFile     string // privkey.pem
 	// Mode selects how the doc root is served: "php" (PHP-FPM + index.php),
-	// "static" (plain files), or "spa" (unknown paths fall back to index.html
-	// for client-side-routed apps like Angular/React). Empty is treated as php.
+	// "static" (plain files), "spa" (unknown paths fall back to index.html for
+	// client-side-routed apps like Angular/React), or "proxy" (reverse-proxy to
+	// a local app on Port). Empty is treated as php.
 	Mode string
+	// Port is the loopback port a "proxy" vhost forwards to (0 for other modes).
+	Port int
 }
 
 // Manager is implemented by each web-server backend (Apache, Nginx).

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/openpropanel/openpropanel/internal/appserver"
 	"github.com/openpropanel/openpropanel/internal/config"
 	"github.com/openpropanel/openpropanel/internal/deploy"
 	"github.com/openpropanel/openpropanel/internal/mariadb"
@@ -45,10 +46,12 @@ type Service struct {
 	sysuser   *sysuser.Manager
 	mariadb   *mariadb.Manager
 	deploy    *deploy.Manager
+	appserver *appserver.Manager
 
 	switchMu  sync.Mutex // serializes web-server switches
 	accountMu sync.Mutex // serializes account deletion (last-admin guard)
 	tenantMu  sync.Mutex // serializes JIT system-user provisioning (ensureTenant)
+	appMu     sync.Mutex // serializes app-port allocation
 
 	jobMu sync.Mutex         // guards jobs
 	jobs  map[int64]*repoJob // background clone/deploy jobs, keyed by PROJECT site ID
@@ -67,8 +70,8 @@ type repoJob struct {
 }
 
 // New wires the orchestrator.
-func New(cfg *config.Config, cfgPath string, s *store.Store, apacheWeb, nginxWeb webserver.Manager, p *php.Manager, sl *ssl.Manager, su *sysuser.Manager, mdb *mariadb.Manager, dep *deploy.Manager) *Service {
-	return &Service{cfg: cfg, cfgPath: cfgPath, store: s, apacheWeb: apacheWeb, nginxWeb: nginxWeb, php: p, ssl: sl, sysuser: su, mariadb: mdb, deploy: dep}
+func New(cfg *config.Config, cfgPath string, s *store.Store, apacheWeb, nginxWeb webserver.Manager, p *php.Manager, sl *ssl.Manager, su *sysuser.Manager, mdb *mariadb.Manager, dep *deploy.Manager, as *appserver.Manager) *Service {
+	return &Service{cfg: cfg, cfgPath: cfgPath, store: s, apacheWeb: apacheWeb, nginxWeb: nginxWeb, php: p, ssl: sl, sysuser: su, mariadb: mdb, deploy: dep, appserver: as}
 }
 
 // web returns the active web-server manager based on the current config.
@@ -219,7 +222,15 @@ func (s *Service) SetServe(ctx context.Context, siteID int64, docRootArg, mode s
 	}
 	switch mode {
 	case "":
+		// This endpoint serves files. A blank submit keeps the current mode —
+		// except proxy, which must never be re-entered here: it would delete the
+		// app below yet leave WebMode=proxy, failing renderVHost and stranding a
+		// stale vhost pointed at a freed (re-assignable) port. Fall back to PHP,
+		// mirroring MapSite.
 		mode = site.WebMode
+		if mode == store.WebModeProxy {
+			mode = store.WebModePHP
+		}
 	case store.WebModePHP, store.WebModeStatic, store.WebModeSPA:
 	default:
 		return errors.New("invalid serving mode")
@@ -245,6 +256,9 @@ func (s *Service) SetServe(ctx context.Context, siteID int64, docRootArg, mode s
 	if err := s.store.SetSiteServe(siteID, docRoot, mode); err != nil {
 		return err
 	}
+	// Leaving proxy mode (mode is php|static|spa here): stop + drop any app so
+	// its port is freed and its unit removed.
+	s.removeAppFor(ctx, site)
 	if err := s.renderVHost(site); err != nil {
 		return err
 	}
@@ -426,6 +440,9 @@ func (s *Service) EnableSSL(ctx context.Context, id int64) error {
 	if site.Type == store.SiteMain {
 		alts = append(alts, "www."+site.Domain)
 	}
+	// The HTTP-01 challenge is served from disk even in proxy mode; ensure the
+	// dir exists (a repo-subdir or proxy doc root may lack it).
+	_ = os.MkdirAll(filepath.Join(site.DocRoot, ".well-known", "acme-challenge"), 0o755)
 	if err := s.ssl.Issue(ctx, site.Domain, alts, site.DocRoot); err != nil {
 		return fmt.Errorf("certificate issuance failed: %w", err)
 	}
@@ -473,6 +490,9 @@ func (s *Service) ChangePHP(ctx context.Context, id int64, phpLabel string) erro
 	}
 	if site.Source != store.SourceManaged {
 		return errImportedReadOnly
+	}
+	if site.WebMode == store.WebModeProxy {
+		return errors.New("this site runs an app behind a reverse proxy — PHP version does not apply")
 	}
 	version, err := s.resolveVersion(phpLabel)
 	if err != nil {
@@ -948,6 +968,14 @@ func (s *Service) renderVHost(site *store.Site) error {
 	if vh.Mode == "" {
 		vh.Mode = store.WebModePHP
 	}
+	// A proxy vhost forwards to the app's loopback port instead of serving files.
+	if vh.Mode == store.WebModeProxy {
+		app, err := s.store.AppBySite(site.ID)
+		if err != nil {
+			return fmt.Errorf("proxy site %s has no app/port configured: %w", site.Domain, err)
+		}
+		vh.Port = app.Port
+	}
 	if site.Type == store.SiteMain {
 		vh.ServerAlias = "www." + site.Domain
 	}
@@ -967,6 +995,7 @@ func (s *Service) teardownArtifacts(ctx context.Context, site *store.Site) {
 	if site.Source != store.SourceManaged {
 		return // never remove a config/pool the panel did not create
 	}
+	_ = s.appserver.Remove(ctx, site.Domain) // stop+remove the app unit (no-op if none)
 	_ = s.web().Remove(site.Domain)
 	_ = s.php.RemoveSite(ctx, site.Domain)
 	// Document root is deliberately left in place so user data is never

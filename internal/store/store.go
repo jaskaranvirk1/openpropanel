@@ -55,6 +55,7 @@ const (
 	WebModePHP    = "php"    // PHP-FPM handler + index.php (default; today's behaviour)
 	WebModeStatic = "static" // plain static files, no SPA fallback
 	WebModeSPA    = "spa"    // single-page app: unknown paths fall back to index.html
+	WebModeProxy  = "proxy"  // reverse-proxy to a local app port (Node/Python/…)
 )
 
 // Site is a domain or subdomain served by the active web server.
@@ -98,6 +99,21 @@ type Repo struct {
 	WebhookSecret string // HMAC key for the GitHub push webhook ("" = webhook disabled)
 	DetectNote    string // standing note from app auto-detection (e.g. "needs a build step")
 	CreatedAt     time.Time
+}
+
+// App is a reverse-proxied application attached to a site: the local port its
+// vhost forwards to, and (when Managed) the start command the panel supervises
+// via a systemd unit running as the site's tenant user.
+type App struct {
+	ID           int64
+	SiteID       int64
+	Port         int
+	Runtime      string // "node" | "python" | "custom" (label only)
+	StartCommand string
+	Managed      bool // panel supervises the process via systemd
+	Env          string // newline-separated KEY=VALUE
+	LastStatus   string
+	CreatedAt    time.Time
 }
 
 // Session is a logged-in cookie session.
@@ -187,6 +203,18 @@ CREATE TABLE IF NOT EXISTS repos (
     created_at      INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS apps (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id       INTEGER NOT NULL UNIQUE REFERENCES sites(id) ON DELETE CASCADE,
+    port          INTEGER NOT NULL UNIQUE,
+    runtime       TEXT NOT NULL DEFAULT '',
+    start_command TEXT NOT NULL DEFAULT '',
+    managed       INTEGER NOT NULL DEFAULT 0,
+    env           TEXT NOT NULL DEFAULT '',
+    last_status   TEXT NOT NULL DEFAULT '',
+    created_at    INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
     token      TEXT PRIMARY KEY,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -222,6 +250,7 @@ CREATE TABLE IF NOT EXISTS dismissed_imports (
 CREATE INDEX IF NOT EXISTS idx_sites_user ON sites(user_id);
 CREATE INDEX IF NOT EXISTS idx_sites_parent ON sites(parent_id);
 CREATE INDEX IF NOT EXISTS idx_repos_project ON repos(project_site_id);
+CREATE INDEX IF NOT EXISTS idx_apps_site ON apps(site_id);
 CREATE INDEX IF NOT EXISTS idx_databases_user ON databases(user_id);
 CREATE INDEX IF NOT EXISTS idx_dbusers_user ON db_users(user_id);
 `
@@ -654,6 +683,112 @@ func (s *Store) ResetStaleRepoDeploys() error {
 func (s *Store) DeleteRepo(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM repos WHERE id = ?`, id)
 	return err
+}
+
+// ---------------------------------------------------------------------------
+// Apps (reverse-proxied runtimes)
+// ---------------------------------------------------------------------------
+
+const appCols = `id, site_id, port, runtime, start_command, managed, env, last_status, created_at`
+
+func scanApp(row interface{ Scan(...any) error }) (*App, error) {
+	var a App
+	var created int64
+	var managed int
+	err := row.Scan(&a.ID, &a.SiteID, &a.Port, &a.Runtime, &a.StartCommand, &managed, &a.Env, &a.LastStatus, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	a.Managed = managed != 0
+	a.CreatedAt = time.Unix(created, 0)
+	return &a, nil
+}
+
+// CreateApp inserts an app row (one per site; the site_id/port UNIQUE
+// constraints are the race backstop for port allocation).
+func (s *Store) CreateApp(a *App) (*App, error) {
+	now := time.Now()
+	m := 0
+	if a.Managed {
+		m = 1
+	}
+	res, err := s.db.Exec(
+		`INSERT INTO apps (site_id, port, runtime, start_command, managed, env, last_status, created_at)
+		 VALUES (?,?,?,?,?,?,?,?)`,
+		a.SiteID, a.Port, a.Runtime, a.StartCommand, m, a.Env, a.LastStatus, now.Unix())
+	if err != nil {
+		return nil, err
+	}
+	a.ID, _ = res.LastInsertId()
+	a.CreatedAt = now
+	return a, nil
+}
+
+// AppBySite returns the app attached to a site (ErrNotFound when none).
+func (s *Store) AppBySite(siteID int64) (*App, error) {
+	return scanApp(s.db.QueryRow(`SELECT `+appCols+` FROM apps WHERE site_id = ?`, siteID))
+}
+
+// UpdateApp updates the runtime config of an app (not its port).
+func (s *Store) UpdateApp(id int64, runtime, startCmd, env string, managed bool) error {
+	m := 0
+	if managed {
+		m = 1
+	}
+	_, err := s.db.Exec(`UPDATE apps SET runtime = ?, start_command = ?, env = ?, managed = ? WHERE id = ?`,
+		runtime, startCmd, env, m, id)
+	return err
+}
+
+// SetAppStatus records the last observed process status.
+func (s *Store) SetAppStatus(id int64, status string) error {
+	_, err := s.db.Exec(`UPDATE apps SET last_status = ? WHERE id = ?`, status, id)
+	return err
+}
+
+// DeleteApp removes an app row (freeing its port).
+func (s *Store) DeleteApp(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM apps WHERE id = ?`, id)
+	return err
+}
+
+// ListManagedApps returns every managed app (for boot-time unit reconcile).
+func (s *Store) ListManagedApps() ([]*App, error) {
+	rows, err := s.db.Query(`SELECT ` + appCols + ` FROM apps WHERE managed = 1`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*App
+	for rows.Next() {
+		a, err := scanApp(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// UsedPorts returns the set of ports currently allocated to apps.
+func (s *Store) UsedPorts() (map[int]bool, error) {
+	rows, err := s.db.Query(`SELECT port FROM apps`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int]bool{}
+	for rows.Next() {
+		var p int
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out[p] = true
+	}
+	return out, rows.Err()
 }
 
 // DismissImport records that an imported site was removed from the panel, so

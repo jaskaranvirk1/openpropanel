@@ -40,7 +40,8 @@
 {{/* ---- OVERVIEW ---- */}}
 <div class="space-y-4">
   <div class="opp-card p-5">
-    <h2 class="mb-4 text-sm font-semibold text-zinc-900">Serving</h2>
+    <h2 class="mb-4 text-sm font-semibold text-zinc-900">Serving files</h2>
+    {{if eq $s.WebMode "proxy"}}<p class="mb-4 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-500">This domain is currently served by an app (below). Saving here switches it back to serving files.</p>{{end}}
 
     {{if $repo}}
     {{/* Repo-fed: folder is a subfolder of the checkout */}}
@@ -88,6 +89,43 @@
     {{end}}
     <div class="mt-4 border-t border-zinc-100 pt-4"><a href="/files?site={{$s.ID}}" class="opp-btn">Open files</a></div>
   </div>
+
+  {{/* ---- Reverse-proxy app ---- */}}
+  {{if eq $s.WebMode "proxy"}}
+  <div class="opp-card p-5">
+    <div class="mb-1 flex flex-wrap items-center gap-2">
+      <h2 class="text-sm font-semibold text-zinc-900">Application</h2>
+      <span class="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-emerald-700">reverse proxy</span>
+    </div>
+    <p class="mb-4 text-xs text-zinc-500">This domain forwards to your app on <span class="font-mono">127.0.0.1:{{with $d.App}}{{.Port}}{{end}}</span>.</p>
+    {{template "appForm" (dict "D" $d)}}
+
+    {{if and $d.App $d.App.Managed}}
+    <div class="mt-4 flex flex-wrap items-center gap-2 border-t border-zinc-100 pt-4">
+      <span class="text-sm text-zinc-600">Status: {{if $d.AppActive}}<span class="font-medium text-emerald-600">running</span>{{else}}<span class="font-medium text-zinc-500">stopped</span>{{end}}</span>
+      <div class="ml-auto flex flex-wrap gap-2">
+        <form method="post" action="/domains/{{$s.ID}}/app/restart"><input type="hidden" name="return" value="{{$d.Detail}}"><button class="opp-btn">Restart</button></form>
+        {{if $d.AppActive}}
+        <form method="post" action="/domains/{{$s.ID}}/app/stop"><input type="hidden" name="return" value="{{$d.Detail}}"><button class="opp-btn">Stop</button></form>
+        {{else}}
+        <form method="post" action="/domains/{{$s.ID}}/app/start"><input type="hidden" name="return" value="{{$d.Detail}}"><button class="opp-btn">Start</button></form>
+        {{end}}
+        <a href="/domains/{{$s.ID}}/app/logs" target="_blank" rel="noopener" class="opp-btn">Logs ↗</a>
+      </div>
+    </div>
+    {{end}}
+  </div>
+  {{else}}
+  <div class="opp-card p-5">
+    <details>
+      <summary class="cursor-pointer list-none">
+        <span class="text-sm font-semibold text-zinc-900">Run an app</span>
+        <span class="text-xs text-zinc-500"> — Node, Python, etc. behind a reverse proxy</span>
+      </summary>
+      <div class="mt-4">{{template "appForm" (dict "D" $d)}}</div>
+    </details>
+  </div>
+  {{end}}
 
   {{if $d.IsProjectMain}}
   <div class="opp-card p-5">
@@ -167,6 +205,39 @@
 {{end}}
 
 <script src="/static/domains.js" defer></script>
+{{end}}
+
+{{/* Reverse-proxy app form. dict: D (domainVM). Shared by the active-proxy card
+     and the "Run an app" disclosure. */}}
+{{define "appForm"}}
+{{$d := .D}}{{$s := $d.Site}}
+<form method="post" action="/domains/{{$s.ID}}/app" class="space-y-3">
+  <input type="hidden" name="return" value="{{$d.Detail}}">
+  <div class="grid gap-3 sm:grid-cols-2">
+    <div>
+      <label class="opp-lbl">Runtime</label>
+      <select name="runtime" class="opp-select">{{range $d.Runtimes}}<option value="{{.}}" {{if and $d.App (eq . $d.App.Runtime)}}selected{{end}}>{{.}}</option>{{end}}</select>
+    </div>
+    <div>
+      <label class="opp-lbl">Port</label>
+      <input value="{{if $d.App}}{{$d.App.Port}}{{else}}assigned on save{{end}}" readonly class="opp-input bg-zinc-50 font-mono text-xs text-zinc-500">
+    </div>
+  </div>
+  <div>
+    <label class="opp-lbl">Start command</label>
+    <input name="start_command" value="{{if $d.App}}{{$d.App.StartCommand}}{{end}}" placeholder="node server.js · npm start · gunicorn app:app" class="opp-input font-mono text-xs">
+    <p class="mt-1 text-[11px] text-zinc-400">Runs in the folder above as your site user. Your app must listen on the port in <span class="font-mono">$PORT</span>.</p>
+  </div>
+  <div>
+    <label class="opp-lbl">Environment <span class="font-normal text-zinc-400">— KEY=value per line, optional</span></label>
+    <textarea name="env" rows="3" placeholder="NODE_ENV=production" class="opp-input font-mono text-xs">{{if $d.App}}{{$d.App.Env}}{{end}}</textarea>
+  </div>
+  <label class="flex items-center gap-2 text-sm text-zinc-700">
+    <input type="checkbox" name="managed" value="1" {{if or (not $d.App) $d.App.Managed}}checked{{end}} class="rounded border-zinc-300 text-blue-600">
+    Keep it running — start on boot, restart on crash
+  </label>
+  <button class="opp-btn-primary">{{if eq $s.WebMode "proxy"}}Save app{{else}}Enable reverse proxy{{end}}</button>
+</form>
 {{end}}
 
 {{/* One read-only folder-mapping row (Deployment tab). */}}

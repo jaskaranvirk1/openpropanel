@@ -159,7 +159,17 @@ var vhostTmpl = template.Must(template.New("vhost").Parse(`# Managed by Open Pro
     CustomLog "/var/log/httpd/{{.Domain}}-ssl-access.log" combined
 </VirtualHost>
 {{- end}}
-{{define "apacheServe"}}    <Directory "{{.DocRoot}}">
+{{define "apacheServe"}}
+{{- if eq .Mode "proxy"}}
+    ProxyPreserveHost On
+    ProxyAddHeaders On
+    RequestHeader set X-Forwarded-Proto "{{if .SSL}}https{{else}}http{{end}}"
+    # Serve the ACME challenge from disk (never proxy it) so certbot keeps working.
+    ProxyPass /.well-known/acme-challenge/ !
+    ProxyPass / http://127.0.0.1:{{.Port}}/ retry=0
+    ProxyPassReverse / http://127.0.0.1:{{.Port}}/
+{{- else}}
+    <Directory "{{.DocRoot}}">
         Options -Indexes +SymLinksIfOwnerMatch
         {{- /* NOT "AllowOverride All": that would let a tenant .htaccess set
              "Options +FollowSymLinks" and defeat SymLinksIfOwnerMatch, following
@@ -181,5 +191,6 @@ var vhostTmpl = template.Must(template.New("vhost").Parse(`# Managed by Open Pro
     DirectoryIndex index.php index.html
 {{- else}}
     DirectoryIndex index.html
+{{- end}}
 {{- end}}
 {{- end}}`))

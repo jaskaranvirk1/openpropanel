@@ -54,6 +54,30 @@ func TestApacheServingModes(t *testing.T) {
 	}
 }
 
+// Proxy mode forwards to a hard-coded 127.0.0.1:<port> loopback target while
+// keeping the ACME challenge served from disk (so certbot keeps working) and
+// never running PHP.
+func TestApacheProxyMode(t *testing.T) {
+	vh := webserver.VHost{Domain: "app.com", DocRoot: "/srv/app", Mode: "proxy", Port: 3123}
+	out := renderApache(t, vh)
+	if !strings.Contains(out, "ProxyPass / http://127.0.0.1:3123/ retry=0") {
+		t.Error("proxy mode should forward / to the loopback app port")
+	}
+	if !strings.Contains(out, "ProxyPass /.well-known/acme-challenge/ !") {
+		t.Error("proxy mode must exclude the ACME challenge from proxying")
+	}
+	if !strings.Contains(out, "ProxyPassReverse / http://127.0.0.1:3123/") {
+		t.Error("proxy mode should rewrite redirect headers back")
+	}
+	if strings.Contains(out, "SetHandler") {
+		t.Error("proxy mode should not run PHP")
+	}
+	// The target must be loopback only — never the public host or a tenant value.
+	if strings.Contains(out, "ProxyPass / http://"+vh.Domain) {
+		t.Error("proxy target must be 127.0.0.1, not the domain")
+	}
+}
+
 // SymLinksIfOwnerMatch is the guard against a tenant symlinking their doc root
 // into another tenant's files; "AllowOverride All" would let a tenant
 // .htaccess re-enable FollowSymLinks and defeat it, so the override list must

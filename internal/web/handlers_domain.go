@@ -43,6 +43,11 @@ type domainVM struct {
 	IsAdmin       bool
 	ActiveTab     string // overview | deployment | ssl
 	Detail        string // this domain's own detail URL, for form "return" fields
+
+	App        *store.App // reverse-proxy app config, or nil
+	AppActive  bool       // managed app unit is running
+	AppEnabled bool       // managed app unit is enabled at boot
+	Runtimes   []string   // runtime labels for the app form
 }
 
 // projectsFor loads the caller's sites and groups them into project rows
@@ -146,6 +151,12 @@ func (s *Server) getDomain(w http.ResponseWriter, r *http.Request) {
 	if tab != "deployment" && tab != "ssl" {
 		tab = "overview"
 	}
+	// Reverse-proxy app (if any) + live unit status for managed apps.
+	app := s.domains.AppFor(site.ID)
+	var appActive, appEnabled bool
+	if app != nil && app.Managed {
+		appActive, appEnabled = s.domains.AppStatus(r.Context(), site.ID)
+	}
 	s.render.page(w, http.StatusOK, "domain", pageData{
 		User: viewer, Active: "domains",
 		Flash: r.URL.Query().Get("msg"), Error: r.URL.Query().Get("err"),
@@ -153,7 +164,8 @@ func (s *Server) getDomain(w http.ResponseWriter, r *http.Request) {
 			Site: site, Project: project, IsProjectMain: isMain, Repo: repo, Subs: subs,
 			OwnerName: ownerName, PHPVersions: s.php.DetectVersions(), Modes: serveModes(),
 			Host: r.Host, IsAdmin: viewer.Role == store.RoleAdmin, ActiveTab: tab,
-			Detail: "/domains/" + strconv.FormatInt(site.ID, 10),
+			Detail:   "/domains/" + strconv.FormatInt(site.ID, 10),
+			App:      app, AppActive: appActive, AppEnabled: appEnabled, Runtimes: appRuntimes(),
 		},
 	})
 }

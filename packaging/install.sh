@@ -56,6 +56,18 @@ fi
 log "Enabling web/PHP services"
 systemctl enable --now php-fpm   || warn "php-fpm not available"
 systemctl enable --now httpd     || warn "httpd not available"
+
+# Reverse-proxy hosting (Run an app) needs mod_proxy_http + mod_headers. They
+# ship enabled in the httpd RPM, but a hardened base image may have dropped them.
+if command -v httpd >/dev/null 2>&1; then
+    mods="$(httpd -M 2>/dev/null || true)"
+    for m in proxy_module proxy_http_module headers_module; do
+        case "$mods" in
+            *"$m"*) ;;
+            *) warn "Apache module $m is not loaded — 'Run an app' (reverse proxy) needs it. Enable it in /etc/httpd/conf.modules.d/ and reload httpd." ;;
+        esac
+    done
+fi
 systemctl enable --now firewalld || warn "firewalld not available; skipping firewall config"
 if [ "${PROPANEL_NO_DB:-0}" != "1" ]; then
     systemctl enable --now mariadb || warn "MariaDB installed but not started — check: systemctl status mariadb"

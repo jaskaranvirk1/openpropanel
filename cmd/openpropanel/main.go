@@ -17,6 +17,7 @@ import (
 	"syscall"
 
 	"github.com/openpropanel/openpropanel/internal/apache"
+	"github.com/openpropanel/openpropanel/internal/appserver"
 	"github.com/openpropanel/openpropanel/internal/auth"
 	"github.com/openpropanel/openpropanel/internal/config"
 	"github.com/openpropanel/openpropanel/internal/deploy"
@@ -125,7 +126,8 @@ func run() error {
 	mariadbMgr := mariadb.New(cfg)
 	pmaMgr := phpmyadmin.New(cfg)
 	deployMgr := deploy.New(cfg)
-	domainSvc := domains.New(cfg, *cfgPath, st, apacheMgr, nginxMgr, phpMgr, sslMgr, sysuserMgr, mariadbMgr, deployMgr)
+	appserverMgr := appserver.New(cfg)
+	domainSvc := domains.New(cfg, *cfgPath, st, apacheMgr, nginxMgr, phpMgr, sslMgr, sysuserMgr, mariadbMgr, deployMgr, appserverMgr)
 
 	// Adopt any vhosts already configured on the host so they show up in the
 	// panel immediately (imported, read-only until explicitly adopted).
@@ -134,6 +136,9 @@ func run() error {
 	} else if n > 0 {
 		log.Printf("imported %d existing site(s) already configured on this host", n)
 	}
+	// Re-materialise managed app units (systemd) from the DB, in case a panel
+	// upgrade or a wiped /etc/systemd left them out of date.
+	domainSvc.ReconcileApps(context.Background())
 
 	srv, err := web.New(cfg, st, authMgr, domainSvc, phpMgr, sysuserMgr, mariadbMgr, pmaMgr, *cfgPath)
 	if err != nil {

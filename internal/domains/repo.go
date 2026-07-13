@@ -394,6 +394,9 @@ func (s *Service) MapSite(ctx context.Context, siteID int64, subdir, mode string
 	}
 	site.DocRoot, site.WebMode = docRoot, mode
 	site.RepoID = sql.NullInt64{Int64: repo.ID, Valid: true}
+	// Mapping always yields a file-serving mode; drop any reverse-proxy app so
+	// its port is freed and its unit removed.
+	s.removeAppFor(ctx, site)
 	if err := s.renderVHost(site); err != nil {
 		return err
 	}

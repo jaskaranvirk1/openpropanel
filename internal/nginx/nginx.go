@@ -138,7 +138,21 @@ server {
     error_log /var/log/nginx/{{.Domain}}-error.log;
 }
 {{- end}}
-{{define "nginxServe"}}    index {{if eq .Mode "php"}}index.php index.html{{else}}index.html{{end}};
+{{define "nginxServe"}}
+{{- if eq .Mode "proxy"}}
+    location / {
+        proxy_pass http://127.0.0.1:{{.Port}};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 90s;
+    }
+{{- else}}
+    index {{if eq .Mode "php"}}index.php index.html{{else}}index.html{{end}};
 
     # Deny dotfiles (.git, .env, .user.ini, ...) while keeping .well-known reachable.
     location ~ /\.(?!well-known/) {
@@ -158,6 +172,7 @@ server {
         include fastcgi_params;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
     }
+{{- end}}
 {{- end}}
 {{- end}}
 {{end}}`))

@@ -170,6 +170,17 @@ func ServiceEnabled(ctx context.Context, unit string) bool {
 	return strings.TrimSpace(out) == "enabled"
 }
 
+// DaemonReload reloads systemd's unit definitions after a unit file changes.
+func DaemonReload(ctx context.Context) error {
+	_, err := Run(ctx, "systemctl", "daemon-reload")
+	return err
+}
+
+// JournalTail returns the last n journald lines for a unit.
+func JournalTail(ctx context.Context, unit string, n int) (string, error) {
+	return Run(ctx, "journalctl", "-u", unit, "-n", fmt.Sprint(n), "--no-pager")
+}
+
 // ServiceInfo is a snapshot of a managed service for the dashboard.
 type ServiceInfo struct {
 	Unit    string
