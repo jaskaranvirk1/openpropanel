@@ -84,6 +84,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Domains tool: a clean list page + a per-domain detail page.
 	app.HandleFunc("GET /domains", s.getDomains)
+	app.HandleFunc("GET /domains/new", s.getNewDomain)
 	app.HandleFunc("GET /domains/{id}", s.getDomain)
 	app.HandleFunc("POST /domains/{id}/serve", s.postServe)
 	app.HandleFunc("POST /domains/{id}/app", s.postSetApp)

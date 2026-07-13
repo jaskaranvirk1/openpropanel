@@ -205,7 +205,9 @@ func (s *Server) postCreateSite(w http.ResponseWriter, r *http.Request) {
 	allowSharedRoot := u.Role == store.RoleAdmin
 	site, err := s.domains.CreateSite(r.Context(), owner, domain, phpVersion, docRoot, allowSharedRoot)
 	if err != nil {
-		redirect(w, r, "/domains", "err", s.opErr(r, err))
+		// Return to the add-domain page with the error and the entered name so it
+		// can be corrected in place (e.g. "domain already exists").
+		redirect(w, r, "/domains/new?domain="+url.QueryEscape(domain), "err", s.opErr(r, err))
 		return
 	}
 	// One-form happy path: an optional GitHub URL creates, links and (for a
@@ -284,8 +286,9 @@ func (s *Server) postAddSubdomain(w http.ResponseWriter, r *http.Request) {
 	u := auth.UserFrom(r.Context())
 	label := r.FormValue("label")
 	docRoot := r.FormValue("doc_root")
+	createFolder := r.FormValue("create_folder") == "1"
 	allowSharedRoot := u != nil && u.Role == store.RoleAdmin
-	if _, err := s.domains.AddSubdomain(r.Context(), site.ID, label, docRoot, allowSharedRoot); err != nil {
+	if _, err := s.domains.AddSubdomain(r.Context(), site.ID, label, docRoot, createFolder, allowSharedRoot); err != nil {
 		s.backRedirect(w, r, "err", s.opErr(r, err))
 		return
 	}

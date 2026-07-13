@@ -1,0 +1,23 @@
+{{define "title"}}Add a domain · Open ProPanel{{end}}
+
+{{define "content"}}
+<div class="mx-auto max-w-lg">
+  <a href="/domains" class="text-sm text-zinc-500 hover:text-blue-600">← Domains</a>
+  <h1 class="mb-6 mt-2 text-2xl font-semibold tracking-tight text-zinc-900">Add a domain</h1>
+
+  <div class="opp-card p-6">
+    <form method="post" action="/sites" class="space-y-4">
+      <div>
+        <label class="opp-lbl">Domain name</label>
+        <input name="domain" required autofocus value="{{.Data.Domain}}" placeholder="example.com"
+               pattern="[a-zA-Z0-9.-]+" class="opp-input">
+        <p class="mt-1.5 text-xs text-zinc-400">Point its DNS at this server. You can connect a GitHub repo and enable SSL after it's created.</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <button class="opp-btn-primary">Add domain</button>
+        <a href="/domains" class="opp-btn">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+{{end}}

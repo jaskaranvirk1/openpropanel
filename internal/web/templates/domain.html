@@ -143,14 +143,19 @@
     {{else}}<p class="text-sm text-zinc-400">No subdomains yet.</p>{{end}}
     <details class="mt-3">
       <summary class="cursor-pointer list-none text-xs text-zinc-500 hover:text-blue-600">+ Add subdomain</summary>
-      <form method="post" action="/sites/{{$s.ID}}/subdomains" class="mt-3 flex flex-wrap items-end gap-2">
+      <form method="post" action="/sites/{{$s.ID}}/subdomains" class="mt-3 space-y-2">
         <input type="hidden" name="return" value="{{$d.Detail}}">
-        <div class="flex min-w-0 max-w-full items-center overflow-hidden rounded-lg border border-zinc-200 bg-white">
-          <input name="label" required placeholder="api" pattern="[a-z0-9-]+" class="w-24 shrink-0 bg-transparent px-3 py-2 text-sm focus:outline-none">
-          <span class="truncate pr-3 text-sm text-zinc-500">.{{$s.Domain}}</span>
+        <div class="flex flex-wrap items-center gap-2">
+          <div class="flex min-w-0 max-w-full items-center overflow-hidden rounded-lg border border-zinc-200 bg-white">
+            <input name="label" required placeholder="api" pattern="[a-z0-9-]+" class="w-24 shrink-0 bg-transparent px-3 py-2 text-sm focus:outline-none">
+            <span class="truncate pr-3 text-sm text-zinc-500">.{{$s.Domain}}</span>
+          </div>
+          <button class="opp-btn">Add</button>
         </div>
-        <input name="doc_root" placeholder="folder · optional" class="opp-input min-w-[150px] flex-1">
-        <button class="opp-btn">Add</button>
+        <label class="flex items-center gap-2 text-xs text-zinc-500">
+          <input type="checkbox" name="create_folder" value="1" class="rounded border-zinc-300 text-blue-600">
+          Create a new folder <span class="text-zinc-400">— otherwise it serves this domain's folder until you point it at one</span>
+        </label>
       </form>
     </details>
   </div>

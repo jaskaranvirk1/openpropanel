@@ -264,10 +264,14 @@ func (s *Service) SetServe(ctx context.Context, siteID int64, docRootArg, mode s
 	return s.web().Apply(ctx)
 }
 
-// AddSubdomain creates <label>.<parentDomain> under an existing site. docRootArg
-// is an optional custom document root; empty uses the default layout.
-// allowSharedRoot must be true only for an admin caller (see CreateSite).
-func (s *Service) AddSubdomain(ctx context.Context, parentID int64, label, docRootArg string, allowSharedRoot bool) (*store.Site, error) {
+// AddSubdomain creates <label>.<parentDomain> under an existing site.
+// createFolder decides whether a brand-new document root is provisioned on disk:
+// when false (and no custom docRootArg is given) the subdomain simply serves the
+// parent's folder until the user points it at one — so we don't litter /var/www
+// with an empty folder per subdomain (the monorepo case maps each to a repo
+// subfolder instead). docRootArg is an optional custom document root; empty uses
+// the default layout. allowSharedRoot must be true only for an admin caller.
+func (s *Service) AddSubdomain(ctx context.Context, parentID int64, label, docRootArg string, createFolder, allowSharedRoot bool) (*store.Site, error) {
 	label = strings.TrimSpace(strings.ToLower(label))
 	if !labelRe.MatchString(label) {
 		return nil, fmt.Errorf("invalid subdomain label %q", label)
@@ -292,18 +296,33 @@ func (s *Service) AddSubdomain(ctx context.Context, parentID int64, label, docRo
 		return nil, err
 	}
 
-	docRoot := s.docRootFor(domain)
+	var docRoot string
 	external := false // operator supplied a custom path we must not seed over or delete
-	if strings.TrimSpace(docRootArg) != "" {
+	switch {
+	case strings.TrimSpace(docRootArg) != "":
 		p, verr := s.validateDocRoot(docRootArg, owner, domain, allowSharedRoot)
 		if verr != nil {
 			return nil, verr
 		}
 		docRoot, external = p, true
+	case createFolder:
+		docRoot = s.docRootFor(domain)
+	default:
+		// No new folder: serve the parent's folder until the user maps this
+		// subdomain to one on its Overview tab.
+		docRoot = parent.DocRoot
 	}
-	if err := s.provisionDocRoot(docRoot, domain, owner.SystemUser, external); err != nil {
-		return nil, err
+	// Only create/seed a folder when the user asked for one (or gave a custom
+	// path); otherwise reuse the existing (parent's) folder untouched.
+	if createFolder || external {
+		if err := s.provisionDocRoot(docRoot, domain, owner.SystemUser, external); err != nil {
+			return nil, err
+		}
 	}
+	// A rollback may only delete a folder WE freshly created for this subdomain.
+	// Never delete a custom path (external) or the reused parent folder — passing
+	// keepFolder as rollbackFiles's "external" flag suppresses deletion for both.
+	keepFolder := external || !createFolder
 
 	site := &store.Site{
 		UserID:     parent.UserID,
@@ -314,18 +333,18 @@ func (s *Service) AddSubdomain(ctx context.Context, parentID int64, label, docRo
 		PHPVersion: version.Label,
 	}
 	if err := s.php.ConfigureSite(ctx, site, version, owner.SystemUser); err != nil {
-		s.rollbackFiles(domain, docRoot, external)
+		s.rollbackFiles(domain, docRoot, keepFolder)
 		return nil, fmt.Errorf("php-fpm: %w", err)
 	}
 	if err := s.renderVHost(site); err != nil {
 		_ = s.php.RemoveSite(ctx, domain)
-		s.rollbackFiles(domain, docRoot, external)
+		s.rollbackFiles(domain, docRoot, keepFolder)
 		return nil, err
 	}
 	if err := s.web().Apply(ctx); err != nil {
 		_ = s.web().Remove(domain)
 		_ = s.php.RemoveSite(ctx, domain)
-		s.rollbackFiles(domain, docRoot, external)
+		s.rollbackFiles(domain, docRoot, keepFolder)
 		return nil, err
 	}
 	created, err := s.store.CreateSite(site)
@@ -335,7 +354,7 @@ func (s *Service) AddSubdomain(ctx context.Context, parentID int64, label, docRo
 		_ = s.web().Remove(domain)
 		_ = s.php.RemoveSite(ctx, domain)
 		_ = s.web().Apply(ctx)
-		s.rollbackFiles(domain, docRoot, external)
+		s.rollbackFiles(domain, docRoot, keepFolder)
 		return nil, err
 	}
 	return created, nil

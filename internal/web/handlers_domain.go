@@ -121,6 +121,16 @@ func (s *Server) getDomains(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// getNewDomain renders the minimal "add a domain" page (just a domain input).
+func (s *Server) getNewDomain(w http.ResponseWriter, r *http.Request) {
+	viewer := auth.UserFrom(r.Context())
+	s.render.page(w, http.StatusOK, "domain_new", pageData{
+		User: viewer, Active: "domains",
+		Error: r.URL.Query().Get("err"),
+		Data:  map[string]any{"Domain": r.URL.Query().Get("domain")},
+	})
+}
+
 // getDomain renders the per-domain detail page (Overview / Deployment / SSL).
 func (s *Server) getDomain(w http.ResponseWriter, r *http.Request) {
 	site, ok := s.authorizeSite(w, r)
