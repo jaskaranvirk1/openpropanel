@@ -1,0 +1,119 @@
+{{define "title"}}Domains · Open ProPanel{{end}}
+
+{{define "content"}}
+<div class="mb-6 flex flex-wrap items-center justify-between gap-3">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-zinc-900">Domains</h1>
+    <p class="text-sm text-zinc-500">Your domains and where each one points.</p>
+  </div>
+  <div class="flex items-center gap-2">
+    {{if .Data.IsAdmin}}<form method="post" action="/sites/scan"><button class="opp-btn">Scan server</button></form>{{end}}
+    <a href="#add-domain" class="opp-btn-primary">+ Add domain</a>
+  </div>
+</div>
+
+{{/* Add domain — a disclosure so it works without JS */}}
+<details id="add-domain" class="opp-card mb-6" {{if not .Data.Rows}}open{{end}}>
+  <summary class="cursor-pointer list-none px-5 py-4 text-sm font-semibold text-zinc-900">Add a domain</summary>
+  <form method="post" action="/sites" class="space-y-3 border-t border-zinc-200 px-5 py-4">
+    <div class="flex flex-wrap items-end gap-3">
+      <div class="min-w-[200px] flex-1">
+        <label class="opp-lbl">Domain</label>
+        <input name="domain" required placeholder="example.com" pattern="[a-zA-Z0-9.-]+" class="opp-input">
+      </div>
+      <div class="min-w-[200px] flex-1">
+        <label class="opp-lbl">Folder <span class="text-zinc-400">· optional</span></label>
+        <input name="doc_root" placeholder="default: /var/www/<domain>/public_html" class="opp-input">
+      </div>
+      <div>
+        <label class="opp-lbl">PHP</label>
+        <select name="php_version" class="opp-select">{{range .Data.PHPVersions}}<option value="{{.Label}}">PHP {{.Label}}</option>{{end}}</select>
+      </div>
+      {{if .Data.IsAdmin}}
+      <div>
+        <label class="opp-lbl">Owner</label>
+        <select name="owner_id" class="opp-select">{{range .Data.Users}}<option value="{{.ID}}" {{if eq .ID $.Data.CurrentUID}}selected{{end}}>{{.Username}}</option>{{end}}</select>
+      </div>
+      {{end}}
+    </div>
+    <div class="flex flex-wrap items-end gap-3">
+      <div class="min-w-[240px] flex-1">
+        <label class="opp-lbl">Deploy from GitHub <span class="text-zinc-400">· optional</span></label>
+        <input name="repo_url" placeholder="https://github.com/owner/repo" class="opp-input">
+      </div>
+      <div>
+        <label class="opp-lbl">Branch</label>
+        <input name="repo_branch" value="main" class="opp-input w-28">
+      </div>
+      <button class="opp-btn-primary">Create domain</button>
+    </div>
+  </form>
+</details>
+
+{{if not .Data.Rows}}
+<div class="rounded-2xl border border-dashed border-zinc-300 bg-white px-6 py-14 text-center text-sm text-zinc-500">No domains yet — add one above, or Scan the server to import existing sites.</div>
+{{end}}
+
+<div class="space-y-4">
+{{range .Data.Rows}}
+{{$repo := .Repo}}{{$pid := .Site.ID}}
+<section class="opp-card overflow-hidden">
+  <div class="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-zinc-100 bg-zinc-50/60 px-5 py-3.5">
+    <a href="/domains/{{.Site.ID}}" class="truncate text-sm font-semibold text-zinc-900 hover:text-blue-600">{{.Site.Domain}}</a>
+    {{if eq .Site.Source "imported"}}<span class="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-700">imported</span>{{end}}
+    {{with $repo}}
+    <a href="/domains/{{$pid}}?tab=deployment" class="inline-flex max-w-full items-center gap-1.5 truncate rounded border border-zinc-200 bg-white px-2 py-0.5 font-mono text-[11px] text-zinc-600 hover:border-zinc-300">
+      <span class="h-1.5 w-1.5 flex-none rounded-full {{if eq .LastStatus "ok"}}bg-emerald-500{{else if eq .LastStatus "error"}}bg-red-500{{else if or (eq .LastStatus "cloning") (eq .LastStatus "deploying")}}bg-blue-500{{else}}bg-zinc-300{{end}}"></span>
+      <span class="truncate">{{.Owner}}/{{.Name}}@{{.Branch}}</span>
+    </a>
+    {{end}}
+    <span class="text-xs text-zinc-400">{{len .Subs}} subdomain{{if ne (len .Subs) 1}}s{{end}}</span>
+    {{if $.Data.IsAdmin}}<span class="text-xs text-zinc-400">· {{.OwnerName}}</span>{{end}}
+  </div>
+  <div>
+    {{template "domainRow" (dict "S" .Site "R" $ "Repo" $repo "Sub" false)}}
+    {{range .Subs}}{{template "domainRow" (dict "S" . "R" $ "Repo" $repo "Sub" true)}}{{end}}
+  </div>
+  {{if ne .Site.Source "imported"}}
+  <details class="border-t border-zinc-100 px-5 py-2.5">
+    <summary class="cursor-pointer list-none text-xs text-zinc-500 hover:text-blue-600">+ Subdomain</summary>
+    <form method="post" action="/sites/{{.Site.ID}}/subdomains" class="mt-3 flex flex-wrap items-end gap-2">
+      <input type="hidden" name="return" value="/domains">
+      <div class="flex min-w-0 max-w-full items-center overflow-hidden rounded-lg border border-zinc-200 bg-white">
+        <input name="label" required placeholder="api" pattern="[a-z0-9-]+" class="w-24 shrink-0 bg-transparent px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none">
+        <span class="truncate pr-3 text-sm text-zinc-500">.{{.Site.Domain}}</span>
+      </div>
+      <input name="doc_root" placeholder="folder · optional" class="opp-input min-w-[150px] flex-1">
+      <button class="opp-btn">Add</button>
+    </form>
+  </details>
+  {{end}}
+</section>
+{{end}}
+</div>
+{{end}}
+
+{{/* One domain/subdomain row. dict: S (site), R (root pageData), Repo, Sub (bool). */}}
+{{define "domainRow"}}
+{{$s := .S}}{{$r := .R}}{{$repo := .Repo}}
+<div class="flex flex-wrap items-center gap-3 border-t border-zinc-50 px-5 py-3 hover:bg-zinc-50/60">
+  <span class="h-2 w-2 flex-none rounded-full {{if $s.SSLEnabled}}bg-emerald-500{{else}}bg-zinc-300{{end}}" title="{{if $s.SSLEnabled}}SSL on{{else}}SSL off{{end}}"></span>
+  <a href="/domains/{{$s.ID}}" class="min-w-0 flex-1 truncate text-sm hover:text-blue-600 {{if .Sub}}text-zinc-600{{else}}font-medium text-zinc-900{{end}}">{{if .Sub}}<span class="text-zinc-300">↳</span> {{end}}{{$s.Domain}}</a>
+  <span class="hidden max-w-[190px] truncate font-mono text-xs text-zinc-400 sm:block">{{shortpath $s.DocRoot}}</span>
+  {{if and $repo (not $s.RepoID.Valid) (ne $s.Source "imported")}}
+  <a href="/domains/{{$s.ID}}" class="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">Choose folder</a>
+  {{end}}
+  {{if eq $s.WebMode "php"}}
+    <form method="post" action="/sites/{{$s.ID}}/php" class="flex items-center gap-1.5">
+      <input type="hidden" name="return" value="/domains">
+      <select name="php_version" onchange="this.form.submit()" class="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 focus:border-blue-400 focus:outline-none">
+        {{range $r.Data.PHPVersions}}<option value="{{.Label}}" {{if eq .Label $s.PHPVersion}}selected{{end}}>PHP {{.Label}}</option>{{end}}
+      </select>
+      <noscript><button class="opp-btn">Set</button></noscript>
+    </form>
+  {{else}}
+    <span class="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[11px] font-medium {{if eq $s.WebMode "spa"}}text-sky-600{{else if eq $s.WebMode "proxy"}}text-violet-600{{else}}text-zinc-500{{end}}">{{if eq $s.WebMode "spa"}}SPA{{else if eq $s.WebMode "proxy"}}Proxy{{else}}Static{{end}}</span>
+  {{end}}
+  <a href="/domains/{{$s.ID}}" class="text-zinc-300 hover:text-zinc-500" title="Settings"><svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M7.5 4.5l6 5.5-6 5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+</div>
+{{end}}

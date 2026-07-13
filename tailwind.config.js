@@ -7,8 +7,9 @@ module.exports = {
     "./internal/web/templates/**/*.html",
     "./internal/web/**/*.go",
     "./internal/domains/**/*.go",
-    // The file explorer builds its DOM (and Tailwind class strings) in JS.
+    // The file explorer + domains picker build DOM (and class strings) in JS.
     "./internal/web/static/files.js",
+    "./internal/web/static/domains.js",
   ],
   theme: {
     extend: {

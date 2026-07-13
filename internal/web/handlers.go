@@ -15,7 +15,6 @@ import (
 
 	"github.com/openpropanel/openpropanel/internal/auth"
 	"github.com/openpropanel/openpropanel/internal/deploy"
-	"github.com/openpropanel/openpropanel/internal/php"
 	"github.com/openpropanel/openpropanel/internal/store"
 	"github.com/openpropanel/openpropanel/internal/system"
 )
@@ -59,15 +58,6 @@ type siteRow struct {
 	Repo      *store.Repo // linked GitHub repo for this project, or nil
 }
 
-type sitesVM struct {
-	Rows        []siteRow
-	PHPVersions []php.Version
-	IsAdmin     bool
-	Users       []*store.User
-	Modes       []string // serving-mode choices for the folder-mapping UI
-	Host        string   // request host, for rendering the webhook URL
-	CurrentUID  int64    // logged-in user, to default the owner picker sanely
-}
 
 type usersVM struct {
 	Users      []*store.User
@@ -198,68 +188,6 @@ func (s *Server) postService(w http.ResponseWriter, r *http.Request) {
 // sites
 // ---------------------------------------------------------------------------
 
-func (s *Server) getSites(w http.ResponseWriter, r *http.Request) {
-	u := auth.UserFrom(r.Context())
-	isAdmin := u.Role == store.RoleAdmin
-
-	var sites []*store.Site
-	var err error
-	if isAdmin {
-		sites, err = s.store.ListSites()
-	} else {
-		sites, err = s.store.ListSitesByUser(u.ID)
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Resolve owner names once.
-	names := map[int64]string{}
-	if isAdmin {
-		if users, err := s.store.ListUsers(); err == nil {
-			for _, usr := range users {
-				names[usr.ID] = usr.Username
-			}
-		}
-	} else {
-		names[u.ID] = u.Username
-	}
-
-	// Group subdomains under their parent main site.
-	subsByParent := map[int64][]*store.Site{}
-	var mains []*store.Site
-	for _, st := range sites {
-		if st.Type == store.SiteSubdomain && st.ParentID.Valid {
-			subsByParent[st.ParentID.Int64] = append(subsByParent[st.ParentID.Int64], st)
-		} else if st.Type == store.SiteMain {
-			mains = append(mains, st)
-		}
-	}
-	rows := make([]siteRow, 0, len(mains))
-	for _, m := range mains {
-		row := siteRow{Site: m, OwnerName: names[m.UserID], Subs: subsByParent[m.ID]}
-		if repo, err := s.store.RepoByProject(m.ID); err == nil {
-			row.Repo = repo
-		}
-		rows = append(rows, row)
-	}
-
-	vm := sitesVM{
-		Rows: rows, PHPVersions: s.php.DetectVersions(), IsAdmin: isAdmin,
-		Modes: []string{store.WebModePHP, store.WebModeStatic, store.WebModeSPA},
-		Host:  r.Host, CurrentUID: u.ID,
-	}
-	if isAdmin {
-		vm.Users, _ = s.store.ListUsers()
-	}
-	s.render.page(w, http.StatusOK, "sites", pageData{
-		User: u, Active: "sites",
-		Flash: r.URL.Query().Get("msg"), Error: r.URL.Query().Get("err"),
-		Data: vm,
-	})
-}
-
 func (s *Server) postCreateSite(w http.ResponseWriter, r *http.Request) {
 	u := auth.UserFrom(r.Context())
 	owner := u.ID
@@ -277,7 +205,7 @@ func (s *Server) postCreateSite(w http.ResponseWriter, r *http.Request) {
 	allowSharedRoot := u.Role == store.RoleAdmin
 	site, err := s.domains.CreateSite(r.Context(), owner, domain, phpVersion, docRoot, allowSharedRoot)
 	if err != nil {
-		redirect(w, r, "/sites", "err", s.opErr(r, err))
+		redirect(w, r, "/domains", "err", s.opErr(r, err))
 		return
 	}
 	// One-form happy path: an optional GitHub URL creates, links and (for a
@@ -306,10 +234,10 @@ func (s *Server) postDeleteSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.domains.DeleteSite(r.Context(), site.ID); err != nil {
-		redirect(w, r, "/sites", "err", s.opErr(r, err))
+		redirect(w, r, "/domains", "err", s.opErr(r, err))
 		return
 	}
-	redirect(w, r, "/sites", "msg", site.Domain+" deleted")
+	redirect(w, r, "/domains", "msg", site.Domain+" deleted")
 }
 
 func (s *Server) postChangePHP(w http.ResponseWriter, r *http.Request) {
@@ -319,10 +247,10 @@ func (s *Server) postChangePHP(w http.ResponseWriter, r *http.Request) {
 	}
 	version := r.FormValue("php_version")
 	if err := s.domains.ChangePHP(r.Context(), site.ID, version); err != nil {
-		redirect(w, r, "/sites", "err", s.opErr(r, err))
+		s.backRedirect(w, r, "err", s.opErr(r, err))
 		return
 	}
-	redirect(w, r, "/sites", "msg", site.Domain+" switched to PHP "+version)
+	s.backRedirect(w, r, "msg", site.Domain+" switched to PHP "+version)
 }
 
 func (s *Server) postToggleSSL(w http.ResponseWriter, r *http.Request) {
@@ -338,14 +266,14 @@ func (s *Server) postToggleSSL(w http.ResponseWriter, r *http.Request) {
 		err = s.domains.DisableSSL(r.Context(), site.ID)
 	}
 	if err != nil {
-		redirect(w, r, "/sites", "err", s.opErr(r, err))
+		s.backRedirect(w, r, "err", s.opErr(r, err))
 		return
 	}
 	msg := "SSL enabled for " + site.Domain
 	if !enable {
 		msg = "SSL disabled for " + site.Domain
 	}
-	redirect(w, r, "/sites", "msg", msg)
+	s.backRedirect(w, r, "msg", msg)
 }
 
 func (s *Server) postAddSubdomain(w http.ResponseWriter, r *http.Request) {
@@ -358,10 +286,10 @@ func (s *Server) postAddSubdomain(w http.ResponseWriter, r *http.Request) {
 	docRoot := r.FormValue("doc_root")
 	allowSharedRoot := u != nil && u.Role == store.RoleAdmin
 	if _, err := s.domains.AddSubdomain(r.Context(), site.ID, label, docRoot, allowSharedRoot); err != nil {
-		redirect(w, r, "/sites", "err", s.opErr(r, err))
+		s.backRedirect(w, r, "err", s.opErr(r, err))
 		return
 	}
-	redirect(w, r, "/sites", "msg", "Subdomain "+label+"."+site.Domain+" created")
+	s.backRedirect(w, r, "msg", "Subdomain "+label+"."+site.Domain+" created")
 }
 
 // postScanSites re-scans the host for pre-existing vhosts and imports new ones.
@@ -376,14 +304,14 @@ func (s *Server) postScanSites(w http.ResponseWriter, r *http.Request) {
 	_ = s.store.ClearDismissals()
 	n, err := s.domains.ImportExisting(r.Context())
 	if err != nil {
-		redirect(w, r, "/sites", "err", "Scan failed: "+err.Error())
+		redirect(w, r, "/domains", "err", "Scan failed: "+err.Error())
 		return
 	}
 	msg := "No new sites found"
 	if n > 0 {
 		msg = "Imported " + strconv.Itoa(n) + " existing site(s)"
 	}
-	redirect(w, r, "/sites", "msg", msg)
+	redirect(w, r, "/domains", "msg", msg)
 }
 
 // postAdoptSite converts an imported site to fully managed.
@@ -393,10 +321,10 @@ func (s *Server) postAdoptSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.domains.AdoptSite(r.Context(), site.ID, r.FormValue("php_version")); err != nil {
-		redirect(w, r, "/sites", "err", s.opErr(r, err))
+		s.backRedirect(w, r, "err", s.opErr(r, err))
 		return
 	}
-	redirect(w, r, "/sites", "msg", site.Domain+" adopted — now fully managed")
+	s.backRedirect(w, r, "msg", site.Domain+" adopted — now fully managed")
 }
 
 // authorizeSite loads the site named by {id} and checks the current user may
@@ -611,7 +539,11 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 
 func redirect(w http.ResponseWriter, r *http.Request, path, kind, msg string) {
 	if msg != "" {
-		path += "?" + kind + "=" + url.QueryEscape(msg)
+		sep := "?"
+		if strings.Contains(path, "?") { // path already carries a query (e.g. ?tab=ssl)
+			sep = "&"
+		}
+		path += sep + kind + "=" + url.QueryEscape(msg)
 	}
 	http.Redirect(w, r, path, http.StatusSeeOther)
 }

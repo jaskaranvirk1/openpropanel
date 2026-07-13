@@ -206,6 +206,51 @@ func (s *Service) CreateSite(ctx context.Context, ownerID int64, rawDomain, phpL
 	return created, nil
 }
 
+// SetServe changes a NON-repo domain's document root and/or serving mode
+// (php|static|spa). Repo-fed domains use MapSite instead. allowSharedRoot must
+// be true only for an admin caller (widens the custom doc-root's allowed area).
+func (s *Service) SetServe(ctx context.Context, siteID int64, docRootArg, mode string, allowSharedRoot bool) error {
+	site, err := s.store.SiteByID(siteID)
+	if err != nil {
+		return err
+	}
+	if site.Source != store.SourceManaged {
+		return errImportedReadOnly
+	}
+	switch mode {
+	case "":
+		mode = site.WebMode
+	case store.WebModePHP, store.WebModeStatic, store.WebModeSPA:
+	default:
+		return errors.New("invalid serving mode")
+	}
+	owner, err := s.store.UserByID(site.UserID)
+	if err != nil {
+		return errors.New("owner account not found")
+	}
+	docRoot := site.DocRoot
+	if strings.TrimSpace(docRootArg) != "" {
+		p, verr := s.validateDocRoot(docRootArg, owner, site.Domain, allowSharedRoot)
+		if verr != nil {
+			return verr
+		}
+		docRoot = p
+		// Ensure the chosen folder exists (external — never seed/chown it: it may
+		// already hold the site's own content).
+		if err := s.provisionDocRoot(docRoot, site.Domain, owner.SystemUser, true); err != nil {
+			return err
+		}
+	}
+	site.DocRoot, site.WebMode = docRoot, mode
+	if err := s.store.SetSiteServe(siteID, docRoot, mode); err != nil {
+		return err
+	}
+	if err := s.renderVHost(site); err != nil {
+		return err
+	}
+	return s.web().Apply(ctx)
+}
+
 // AddSubdomain creates <label>.<parentDomain> under an existing site. docRootArg
 // is an optional custom document root; empty uses the default layout.
 // allowSharedRoot must be true only for an admin caller (see CreateSite).

@@ -82,7 +82,11 @@ func (s *Server) Handler() http.Handler {
 	app.HandleFunc("GET /dashboard/stats", s.getStats)
 	app.HandleFunc("POST /services/{unit}/{action}", s.postService)
 
-	app.HandleFunc("GET /sites", s.getSites)
+	// Domains tool: a clean list page + a per-domain detail page.
+	app.HandleFunc("GET /domains", s.getDomains)
+	app.HandleFunc("GET /domains/{id}", s.getDomain)
+	app.HandleFunc("POST /domains/{id}/serve", s.postServe)
+	app.HandleFunc("GET /sites", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/domains", http.StatusMovedPermanently) })
 	app.HandleFunc("POST /sites", s.postCreateSite)
 	app.HandleFunc("POST /sites/{id}/delete", s.postDeleteSite)
 	app.HandleFunc("POST /sites/{id}/php", s.postChangePHP)

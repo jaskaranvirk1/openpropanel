@@ -37,19 +37,13 @@ func (s *Server) authorizeRepo(w http.ResponseWriter, r *http.Request) (*store.R
 	return repo, true
 }
 
-// projectRedirect PRG-redirects back to the Projects page anchored at a
-// project's card, so the user lands where they acted — not at the page top
-// with the relevant card collapsed off-screen. ERRORS are deliberately NOT
-// anchored: the flash banner renders once at the top of the page, and
-// anchoring would scroll it out of view, making a failed action look like a
-// silent no-op.
+// projectRedirect PRG-redirects to a project's detail page on the Deployment
+// tab (where all repo lifecycle actions live), so the user lands where they
+// acted with the flash visible at the top.
 func projectRedirect(w http.ResponseWriter, r *http.Request, projectID int64, kind, msg string) {
-	path := "/sites"
+	path := "/domains/" + strconv.FormatInt(projectID, 10) + "?tab=deployment"
 	if msg != "" {
-		path += "?" + kind + "=" + url.QueryEscape(msg)
-	}
-	if kind != "err" {
-		path += "#project-" + strconv.FormatInt(projectID, 10)
+		path += "&" + kind + "=" + url.QueryEscape(msg)
 	}
 	http.Redirect(w, r, path, http.StatusSeeOther)
 }
@@ -139,7 +133,7 @@ func (s *Server) getRepoCard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.render.fragment(w, "sites", "repoBox", map[string]any{
+	s.render.fragment(w, "domain", "deployStatus", map[string]any{
 		"Repo": repo,
 		"Pid":  repo.ProjectSiteID,
 		"Host": r.Host,
@@ -152,20 +146,15 @@ func (s *Server) postMapSite(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Anchor back to the project card (the parent's, for a subdomain row).
-	pid := site.ID
-	if site.Type == store.SiteSubdomain && site.ParentID.Valid {
-		pid = site.ParentID.Int64
-	}
 	if err := s.domains.MapSite(r.Context(), site.ID, r.FormValue("subdir"), r.FormValue("mode")); err != nil {
-		projectRedirect(w, r, pid, "err", s.opErr(r, err))
+		s.backRedirect(w, r, "err", s.opErr(r, err))
 		return
 	}
 	folder := r.FormValue("subdir")
 	if folder == "" {
 		folder = "the repository root"
 	}
-	projectRedirect(w, r, pid, "msg", site.Domain+" now serves from "+folder)
+	s.backRedirect(w, r, "msg", site.Domain+" now serves from "+folder)
 }
 
 // getRepoTree lists subfolders of a repo checkout for the folder picker (JSON).

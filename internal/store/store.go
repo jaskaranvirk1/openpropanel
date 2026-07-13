@@ -530,6 +530,14 @@ func (s *Store) SetSiteMapping(id int64, repoID sql.NullInt64, subdir, docRoot, 
 	return err
 }
 
+// SetSiteServe updates a site's document root and serving mode WITHOUT touching
+// its repo mapping — for a domain that is not fed by a linked repo (the repo
+// path uses SetSiteMapping instead).
+func (s *Store) SetSiteServe(id int64, docRoot, webMode string) error {
+	_, err := s.db.Exec(`UPDATE sites SET doc_root = ?, web_mode = ? WHERE id = ?`, docRoot, webMode, id)
+	return err
+}
+
 // ---------------------------------------------------------------------------
 // Repositories (GitHub deploy)
 // ---------------------------------------------------------------------------

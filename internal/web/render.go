@@ -105,7 +105,7 @@ func newRenderer() (*renderer, error) {
 		return nil, err
 	}
 
-	appPages := []string{"dashboard", "sites", "databases", "users", "settings", "files", "fileedit"}
+	appPages := []string{"dashboard", "domains", "domain", "databases", "users", "settings", "files", "fileedit"}
 	for _, p := range appPages {
 		clone, err := base.Clone()
 		if err != nil {

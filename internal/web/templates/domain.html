@@ -1,0 +1,251 @@
+{{define "title"}}{{.Data.Site.Domain}} · Open ProPanel{{end}}
+
+{{define "content"}}
+{{$d := .Data}}{{$s := $d.Site}}{{$repo := $d.Repo}}
+
+<div class="mb-5">
+  <a href="/domains" class="text-sm text-zinc-500 hover:text-blue-600">← Domains</a>
+  <div class="mt-2 flex flex-wrap items-center gap-3">
+    <span class="h-2.5 w-2.5 flex-none rounded-full {{if $s.SSLEnabled}}bg-emerald-500{{else}}bg-zinc-300{{end}}"></span>
+    <h1 class="min-w-0 break-all text-2xl font-semibold tracking-tight text-zinc-900">{{$s.Domain}}</h1>
+    {{if eq $s.Source "imported"}}<span class="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-700">imported</span>{{end}}
+    <a href="https://{{$s.Domain}}" target="_blank" rel="noopener" class="opp-btn ml-auto">Open ↗</a>
+  </div>
+  {{if $d.IsAdmin}}<p class="mt-1 text-xs text-zinc-400">owner: {{$d.OwnerName}}</p>{{end}}
+</div>
+
+{{$tab := $d.ActiveTab}}
+<div class="mb-6 flex gap-1 overflow-x-auto border-b border-zinc-200 text-sm">
+  <a href="/domains/{{$s.ID}}?tab=overview" class="whitespace-nowrap border-b-2 px-3 py-2 {{if eq $tab "overview"}}border-blue-600 font-medium text-blue-600{{else}}border-transparent text-zinc-500 hover:text-zinc-900{{end}}">Overview</a>
+  <a href="/domains/{{$s.ID}}?tab=deployment" class="whitespace-nowrap border-b-2 px-3 py-2 {{if eq $tab "deployment"}}border-blue-600 font-medium text-blue-600{{else}}border-transparent text-zinc-500 hover:text-zinc-900{{end}}">Deployment</a>
+  <a href="/domains/{{$s.ID}}?tab=ssl" class="whitespace-nowrap border-b-2 px-3 py-2 {{if eq $tab "ssl"}}border-blue-600 font-medium text-blue-600{{else}}border-transparent text-zinc-500 hover:text-zinc-900{{end}}">SSL</a>
+</div>
+
+{{if eq $s.Source "imported"}}
+{{/* Imported sites: read-only until adopted */}}
+<div class="opp-card p-5">
+  <h2 class="text-sm font-semibold text-zinc-900">Imported site</h2>
+  <p class="mt-1 text-sm text-zinc-500">Discovered from an existing config — read-only until adopted. Adopting brings it under full management (config backed up, reversible).</p>
+  <form method="post" action="/sites/{{$s.ID}}/adopt" class="mt-4 flex flex-wrap items-end gap-2">
+    <input type="hidden" name="return" value="{{$d.Detail}}">
+    <div><label class="opp-lbl">PHP version</label>
+      <select name="php_version" class="opp-select">{{range $d.PHPVersions}}<option value="{{.Label}}">PHP {{.Label}}</option>{{end}}</select>
+    </div>
+    <button class="opp-btn-primary">Adopt</button>
+    <a href="/files?site={{$s.ID}}" class="opp-btn">Files</a>
+  </form>
+</div>
+
+{{else if eq $tab "overview"}}
+{{/* ---- OVERVIEW ---- */}}
+<div class="space-y-4">
+  <div class="opp-card p-5">
+    <h2 class="mb-4 text-sm font-semibold text-zinc-900">Serving</h2>
+
+    {{if $repo}}
+    {{/* Repo-fed: folder is a subfolder of the checkout */}}
+    <form method="post" action="/sites/{{$s.ID}}/mapping" class="space-y-3">
+      <input type="hidden" name="return" value="{{$d.Detail}}">
+      <div>
+        <label class="opp-lbl">Folder in the repository</label>
+        <div class="flex flex-wrap items-center gap-2">
+          <input id="opp-subdir" name="subdir" value="{{$s.RepoSubdir}}" placeholder="e.g. frontend/dist/browser (blank = repo root)" class="opp-input min-w-[220px] flex-1">
+          <button type="button" class="opp-btn" data-browse="{{$repo.ID}}" data-target="opp-subdir">Browse…</button>
+        </div>
+        <div id="opp-browse" class="mt-2 hidden max-h-56 space-y-1 overflow-y-auto rounded-xl border border-zinc-200 bg-white p-3"></div>
+      </div>
+      <div>
+        <label class="opp-lbl">Serve as</label>
+        <select name="mode" class="opp-select">{{range $d.Modes}}<option value="{{.Value}}" {{if eq .Value $s.WebMode}}selected{{end}}>{{.Label}}</option>{{end}}</select>
+      </div>
+      <button class="opp-btn-primary">Save folder</button>
+    </form>
+    {{else}}
+    {{/* Not repo-fed: plain document root */}}
+    <form method="post" action="/domains/{{$s.ID}}/serve" class="space-y-3">
+      <input type="hidden" name="return" value="{{$d.Detail}}">
+      <div>
+        <label class="opp-lbl">Document root</label>
+        <input name="doc_root" value="{{$s.DocRoot}}" class="opp-input font-mono text-xs">
+      </div>
+      <div>
+        <label class="opp-lbl">Serve as</label>
+        <select name="mode" class="opp-select">{{range $d.Modes}}<option value="{{.Value}}" {{if eq .Value $s.WebMode}}selected{{end}}>{{.Label}}</option>{{end}}</select>
+      </div>
+      <button class="opp-btn-primary">Save</button>
+    </form>
+    {{end}}
+
+    {{if eq $s.WebMode "php"}}
+    <form method="post" action="/sites/{{$s.ID}}/php" class="mt-5 border-t border-zinc-100 pt-4">
+      <input type="hidden" name="return" value="{{$d.Detail}}">
+      <label class="opp-lbl">PHP version</label>
+      <div class="flex items-center gap-2">
+        <select name="php_version" onchange="this.form.submit()" class="opp-select">{{range $d.PHPVersions}}<option value="{{.Label}}" {{if eq .Label $s.PHPVersion}}selected{{end}}>PHP {{.Label}}</option>{{end}}</select>
+        <noscript><button class="opp-btn">Apply</button></noscript>
+      </div>
+    </form>
+    {{end}}
+    <div class="mt-4 border-t border-zinc-100 pt-4"><a href="/files?site={{$s.ID}}" class="opp-btn">Open files</a></div>
+  </div>
+
+  {{if $d.IsProjectMain}}
+  <div class="opp-card p-5">
+    <h2 class="mb-3 text-sm font-semibold text-zinc-900">Subdomains</h2>
+    {{if $d.Subs}}
+    <div class="divide-y divide-zinc-100">
+      {{range $d.Subs}}
+      <a href="/domains/{{.ID}}" class="flex items-center gap-3 py-2.5 text-sm hover:text-blue-600">
+        <span class="h-2 w-2 flex-none rounded-full {{if .SSLEnabled}}bg-emerald-500{{else}}bg-zinc-300{{end}}"></span>
+        <span class="min-w-0 flex-1 truncate text-zinc-800">{{.Domain}}</span>
+        <span class="hidden max-w-[190px] truncate font-mono text-xs text-zinc-400 sm:block">{{shortpath .DocRoot}}</span>
+      </a>
+      {{end}}
+    </div>
+    {{else}}<p class="text-sm text-zinc-400">No subdomains yet.</p>{{end}}
+    <details class="mt-3">
+      <summary class="cursor-pointer list-none text-xs text-zinc-500 hover:text-blue-600">+ Add subdomain</summary>
+      <form method="post" action="/sites/{{$s.ID}}/subdomains" class="mt-3 flex flex-wrap items-end gap-2">
+        <input type="hidden" name="return" value="{{$d.Detail}}">
+        <div class="flex min-w-0 max-w-full items-center overflow-hidden rounded-lg border border-zinc-200 bg-white">
+          <input name="label" required placeholder="api" pattern="[a-z0-9-]+" class="w-24 shrink-0 bg-transparent px-3 py-2 text-sm focus:outline-none">
+          <span class="truncate pr-3 text-sm text-zinc-500">.{{$s.Domain}}</span>
+        </div>
+        <input name="doc_root" placeholder="folder · optional" class="opp-input min-w-[150px] flex-1">
+        <button class="opp-btn">Add</button>
+      </form>
+    </details>
+  </div>
+  {{end}}
+
+  <div class="opp-card border-red-100 p-5">
+    <h2 class="text-sm font-semibold text-zinc-900">Delete</h2>
+    <p class="mb-3 mt-1 text-xs text-zinc-500">Removes the {{if $d.IsProjectMain}}domain and its subdomains{{else}}subdomain{{end}} and its config. Files on disk are kept.</p>
+    <form method="post" action="/sites/{{$s.ID}}/delete" onsubmit="return confirm('Delete {{$s.Domain}}? Files on disk are kept.')">
+      <button class="opp-btn-danger">Delete {{$s.Domain}}</button>
+    </form>
+  </div>
+</div>
+
+{{else if eq $tab "deployment"}}
+{{/* ---- DEPLOYMENT ---- */}}
+{{if not $d.IsProjectMain}}
+<div class="opp-card p-5 text-sm text-zinc-600">
+  Deployment is managed on the project's main domain.
+  <a href="/domains/{{$d.Project.ID}}?tab=deployment" class="text-blue-600 hover:underline">Go to {{$d.Project.Domain}} →</a>
+  <p class="mt-2 text-xs text-zinc-500">The repository is cloned once for the whole project; each domain serves a folder of it (set on its Overview tab).</p>
+</div>
+{{else}}
+{{template "deployStatus" (dict "Repo" $repo "Pid" $s.ID "Host" $d.Host)}}
+{{if $repo}}
+<div class="opp-card mt-4 p-5">
+  <h2 class="mb-1 text-sm font-semibold text-zinc-900">Folders</h2>
+  <p class="mb-3 text-xs text-zinc-500">Each domain serves a folder of this repository — edit on its Overview tab.</p>
+  <div class="divide-y divide-zinc-100">
+    {{template "folderRow" (dict "S" $s)}}
+    {{range $d.Subs}}{{template "folderRow" (dict "S" .)}}{{end}}
+  </div>
+</div>
+{{end}}
+{{end}}
+
+{{else if eq $tab "ssl"}}
+{{/* ---- SSL ---- */}}
+<div class="opp-card p-5">
+  <div class="flex flex-wrap items-center justify-between gap-3">
+    <div>
+      <h2 class="text-sm font-semibold text-zinc-900">HTTPS</h2>
+      <p class="mt-1 text-sm text-zinc-500">{{if $s.SSLEnabled}}A Let's Encrypt certificate is active.{{else}}Not enabled. Requires DNS pointing here + port 80 reachable + an ACME email in Settings.{{end}}</p>
+    </div>
+    <form method="post" action="/sites/{{$s.ID}}/ssl">
+      <input type="hidden" name="return" value="{{$d.Detail}}?tab=ssl">
+      <input type="hidden" name="enable" value="{{if $s.SSLEnabled}}0{{else}}1{{end}}">
+      <button class="{{if $s.SSLEnabled}}opp-btn-danger{{else}}opp-btn-primary{{end}}">{{if $s.SSLEnabled}}Disable SSL{{else}}Enable SSL{{end}}</button>
+    </form>
+  </div>
+</div>
+{{end}}
+
+<script src="/static/domains.js" defer></script>
+{{end}}
+
+{{/* One read-only folder-mapping row (Deployment tab). */}}
+{{define "folderRow"}}
+{{$s := .S}}
+<a href="/domains/{{$s.ID}}?tab=overview" class="flex items-center gap-3 py-2.5 text-sm hover:text-blue-600">
+  <span class="min-w-0 flex-1 truncate text-zinc-800">{{$s.Domain}}</span>
+  <span class="max-w-[45%] truncate font-mono text-xs text-zinc-500">{{if $s.RepoID.Valid}}{{if $s.RepoSubdir}}{{$s.RepoSubdir}}{{else}}/ (root){{end}}{{else}}<span class="text-amber-600">choose folder</span>{{end}}</span>
+</a>
+{{end}}
+
+{{/* Deploy status + actions. dict: Repo (may be nil), Pid (project main id), Host.
+     Also rendered as an HTMX fragment by GET /repos/{id}/card while busy. */}}
+{{define "deployStatus"}}
+{{$r := .Repo}}{{$pid := .Pid}}{{$host := .Host}}
+{{$busy := false}}{{with $r}}{{if or (eq .LastStatus "cloning") (eq .LastStatus "deploying")}}{{$busy = true}}{{end}}{{end}}
+<div id="deploybox" {{if $busy}}hx-get="/repos/{{$r.ID}}/card" hx-trigger="load delay:3s" hx-swap="outerHTML"{{end}}>
+{{if not $r}}
+  <div class="opp-card p-5">
+    <h2 class="text-sm font-semibold text-zinc-900">Deploy from GitHub</h2>
+    <form method="post" action="/projects/{{$pid}}/repo" class="mt-3 flex flex-wrap items-end gap-2">
+      <input name="repo_url" required placeholder="https://github.com/owner/repo" class="opp-input min-w-[240px] flex-1">
+      <input name="branch" value="main" class="opp-input w-28">
+      <button class="opp-btn-primary">Connect repository</button>
+    </form>
+    <p class="mt-2 text-xs text-zinc-500">Public repos deploy immediately. Private repos get a read-only deploy key to add on GitHub — one extra click.</p>
+  </div>
+{{else}}
+  <div class="opp-card p-5">
+    <div class="flex flex-wrap items-center gap-2 text-sm">
+      <a href="https://github.com/{{$r.Owner}}/{{$r.Name}}" target="_blank" rel="noopener" class="min-w-0 break-all font-mono text-zinc-700 hover:text-blue-600">{{$r.Owner}}/{{$r.Name}}@{{$r.Branch}}</a>
+      {{if $busy}}<span class="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">{{if eq $r.LastStatus "cloning"}}cloning…{{else}}deploying…{{end}}</span>
+      {{else if eq $r.LastStatus "ok"}}<span class="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700">deployed{{if $r.LastCommit}} {{$r.LastCommit}}{{end}}</span>
+      {{else if eq $r.LastStatus "error"}}<span class="rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-700">failed</span>{{end}}
+    </div>
+    {{if $r.LastError}}<p class="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{{$r.LastError}}</p>{{end}}
+    {{if $r.DetectNote}}<p class="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">{{$r.DetectNote}}</p>{{end}}
+
+    {{if and $r.PublicKey (ne $r.LastStatus "ok")}}
+    <div class="mt-3 rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-600">
+      <p>A <strong>deploy key</strong> is a read-only password that lets this server pull your code. Add it on GitHub, then Deploy.</p>
+      <div class="mt-2 flex flex-wrap items-center gap-2">
+        <button type="button" class="opp-btn" data-copy="{{$r.PublicKey}}" onclick="navigator.clipboard.writeText(this.dataset.copy);this.textContent='Copied ✓';setTimeout(()=>{this.textContent='Copy key'},1500)">Copy key</button>
+        <a href="https://github.com/{{$r.Owner}}/{{$r.Name}}/settings/keys" target="_blank" rel="noopener" class="text-blue-600 hover:underline">Open GitHub Deploy keys ↗</a>
+      </div>
+      <pre class="mt-2 overflow-x-auto rounded border border-zinc-200 bg-white p-2 font-mono text-[11px] text-zinc-700">{{$r.PublicKey}}</pre>
+    </div>
+    {{end}}
+
+    {{if not $busy}}
+    <div class="mt-3 flex flex-wrap items-end gap-2">
+      {{if eq $r.LastStatus "ok"}}
+      <form method="post" action="/projects/{{$pid}}/deploy"><button class="opp-btn-primary">Redeploy</button></form>
+      {{else}}
+      <form method="post" action="/repos/{{$r.ID}}/activate"><button class="opp-btn-primary">Deploy</button></form>
+      {{end}}
+      <form method="post" action="/repos/{{$r.ID}}/branch" class="flex items-end gap-1.5">
+        <div><label class="opp-lbl">Branch</label><input name="branch" value="{{$r.Branch}}" class="opp-input w-32"></div>
+        <button class="opp-btn">Change</button>
+      </form>
+      <form method="post" action="/projects/{{$pid}}/repo/delete" onsubmit="return confirm('Disconnect the repository? Files on disk are kept.')"><button class="opp-btn-danger">Disconnect</button></form>
+    </div>
+    {{if and $r.WebhookSecret (eq $r.LastStatus "ok")}}
+    <details class="mt-3">
+      <summary class="cursor-pointer list-none text-xs font-medium text-zinc-700 hover:text-blue-600">⚡ Auto-deploy on push (webhook)</summary>
+      <div class="mt-2 space-y-2 text-xs text-zinc-600">
+        <p>On GitHub → repo → Settings → Webhooks → Add webhook:</p>
+        <ol class="list-decimal space-y-1 pl-5">
+          <li>Payload URL: <code class="break-all rounded bg-zinc-100 px-1">https://{{$host}}/hooks/github/{{$r.ID}}</code></li>
+          <li><strong>Content type: application/json</strong> (GitHub defaults to the other one — change it).</li>
+          <li>Secret: <code class="break-all rounded bg-zinc-100 px-1">{{$r.WebhookSecret}}</code></li>
+          <li>Events: just the push event.</li>
+        </ol>
+        <p class="text-zinc-500">GitHub's green check means <em>delivered</em>, not deployed — this card shows the result.</p>
+      </div>
+    </details>
+    {{end}}
+    {{end}}
+  </div>
+{{end}}
+</div>
+{{end}}
