@@ -200,18 +200,22 @@
 
 {{if $d.SystemUser}}
 <div class="opp-card mt-4 p-5">
-  <h2 class="mb-1 text-sm font-semibold text-zinc-900">Deploy from your terminal</h2>
-  <p class="mb-3 text-xs text-zinc-500">The panel deploys as this site's user, so the checkout is owned by <span class="font-mono text-zinc-700">{{$d.SystemUser}}</span>. Run git as that user — not <span class="font-mono text-zinc-700">root</span>, which trips git's “dubious ownership” error.</p>
-  {{$pull := printf "sudo -u %s git -C %s pull" $d.SystemUser $repo.CheckoutDir}}
+  <h2 class="mb-1 text-sm font-semibold text-zinc-900">Pull from your terminal</h2>
+  <p class="mb-3 text-xs text-zinc-500">Inside this checkout, plain <span class="font-mono text-zinc-700">git pull</span> just works — the panel's git helper runs it as the site's user (<span class="font-mono text-zinc-700">{{$d.SystemUser}}</span>), so it never trips git's “dubious ownership” error. Open a fresh shell after updating.</p>
+  {{$cmd := printf "cd %s && git pull" $repo.CheckoutDir}}
   <div class="flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 p-2">
-    <code class="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-xs text-zinc-700">{{$pull}}</code>
-    <button type="button" class="opp-btn shrink-0" data-copy="{{$pull}}" onclick="navigator.clipboard.writeText(this.dataset.copy);this.textContent='Copied ✓';setTimeout(()=>{this.textContent='Copy'},1500)">Copy</button>
+    <code class="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-xs text-zinc-700">{{$cmd}}</code>
+    <button type="button" class="opp-btn shrink-0" data-copy="{{$cmd}}" onclick="navigator.clipboard.writeText(this.dataset.copy);this.textContent='Copied ✓';setTimeout(()=>{this.textContent='Copy'},1500)">Copy</button>
   </div>
-  {{if ne $repo.AuthMode "https_public"}}
-  <p class="mt-2 text-xs text-amber-600">This is a private repo — its deploy key isn't loaded in a plain shell, so a terminal pull won't authenticate. Use <strong>Redeploy</strong> above instead.</p>
-  {{else}}
-  <p class="mt-2 text-xs text-zinc-400">Or use <strong>Redeploy</strong> above, which pulls as this user with the right keys.</p>
-  {{end}}
+  {{if ne $repo.AuthMode "https_public"}}<p class="mt-2 text-xs text-zinc-400">This private repo's deploy key is wired in on each deploy. If a pull ever asks for credentials, click <strong>Redeploy</strong> above once.</p>{{end}}
+  <details class="mt-2">
+    <summary class="cursor-pointer list-none text-xs text-zinc-500 hover:text-blue-600">Without the helper (explicit)</summary>
+    {{$explicit := printf "sudo -u %s git -C %s pull" $d.SystemUser $repo.CheckoutDir}}
+    <div class="mt-2 flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 p-2">
+      <code class="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-xs text-zinc-700">{{$explicit}}</code>
+      <button type="button" class="opp-btn shrink-0" data-copy="{{$explicit}}" onclick="navigator.clipboard.writeText(this.dataset.copy);this.textContent='Copied ✓';setTimeout(()=>{this.textContent='Copy'},1500)">Copy</button>
+    </div>
+  </details>
 </div>
 {{end}}
 {{end}}

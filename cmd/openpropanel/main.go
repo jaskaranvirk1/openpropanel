@@ -139,6 +139,9 @@ func run() error {
 	// Re-materialise managed app units (systemd) from the DB, in case a panel
 	// upgrade or a wiped /etc/systemd left them out of date.
 	domainSvc.ReconcileApps(context.Background())
+	// Wire existing repos for terminal `git pull` (durable deploy key +
+	// core.sshCommand), so the feature works after an upgrade without a redeploy.
+	domainSvc.ReconcileRepoAuth(context.Background())
 
 	srv, err := web.New(cfg, st, authMgr, domainSvc, phpMgr, sysuserMgr, mariadbMgr, pmaMgr, *cfgPath)
 	if err != nil {

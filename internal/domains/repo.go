@@ -290,6 +290,11 @@ func (s *Service) activateOnce(ctx context.Context, repoID int64) {
 		s.recordRepoFailure(repoID, "", err)
 		return
 	}
+	// Wire the checkout so the tenant's own `git pull` authenticates (private
+	// repos get the deploy key; public repos need nothing).
+	if aerr := s.deploy.InstallRepoAuth(ctx, repo, uid, gid); aerr != nil {
+		log.Printf("repo %d: enable terminal git pull: %v", repoID, aerr)
+	}
 
 	// Auto-detect how to serve the checkout and point the main domain at it —
 	// but only when this repo hasn't been mapped yet (site.RepoID != repo.ID
@@ -334,6 +339,9 @@ func (s *Service) deployOnce(ctx context.Context, repoID, projectSiteID int64) {
 	if derr != nil {
 		s.recordRepoFailure(repoID, repo.LastCommit, derr)
 		return
+	}
+	if aerr := s.deploy.InstallRepoAuth(ctx, repo, uid, gid); aerr != nil {
+		log.Printf("repo %d: enable terminal git pull: %v", repoID, aerr)
 	}
 	if err := s.web().Reload(ctx); err != nil {
 		s.recordRepoFailure(repoID, commit, fmt.Errorf("deployed %s but the web server reload failed: %w", commit, err))
@@ -426,6 +434,32 @@ func (s *Service) RepoHead(ctx context.Context, projectSiteID int64) *deploy.Com
 	return info
 }
 
+// ReconcileRepoAuth wires every existing repo's checkout for terminal `git pull`
+// at startup, so an upgrade enables it without a manual Redeploy. Best-effort and
+// per-repo so one failure can't block the rest.
+func (s *Service) ReconcileRepoAuth(ctx context.Context) {
+	repos, err := s.store.ListRepos()
+	if err != nil {
+		return
+	}
+	for _, repo := range repos {
+		uid, gid, err := s.projectTenant(repo.ProjectSiteID)
+		if err != nil {
+			continue
+		}
+		if !isGitCheckoutDir(repo.CheckoutDir) {
+			continue // not cloned yet; the next deploy will wire it
+		}
+		_ = s.deploy.InstallRepoAuth(ctx, repo, uid, gid)
+	}
+}
+
+// isGitCheckoutDir reports whether dir looks like a git working tree.
+func isGitCheckoutDir(dir string) bool {
+	fi, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil && (fi.IsDir() || fi.Mode().IsRegular())
+}
+
 // RepoTree lists the immediate subdirectories of rel inside a project's repo
 // checkout (for the folder picker), hiding VCS/build noise.
 func (s *Service) RepoTree(repoID int64, rel string) ([]string, error) {
@@ -461,6 +495,7 @@ func (s *Service) UnlinkRepo(ctx context.Context, projectSiteID int64) error {
 		return nil
 	}
 	s.deploy.RemoveKey(repo.ID)
+	s.deploy.RemoveRepoAuth(repo) // durable deploy-key copy beside the checkout
 	if err := s.store.ClearRepoMapping(repo.ID); err != nil {
 		return err
 	}

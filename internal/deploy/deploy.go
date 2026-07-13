@@ -356,6 +356,58 @@ func (m *Manager) Deploy(ctx context.Context, r *store.Repo, uid, gid uint32) (s
 	return strings.TrimSpace(out), err
 }
 
+// repoAuthDir is a tenant-owned directory beside the checkout holding a durable
+// copy of the deploy key + pinned host keys, so the owner's plain `git pull`
+// authenticates without the panel's per-call env. Kept out of the checkout (and
+// out of any doc root) so it is never committed or web-served.
+func (m *Manager) repoAuthDir(r *store.Repo) string {
+	return filepath.Join(filepath.Dir(r.CheckoutDir), ".opp-deploy")
+}
+
+// InstallRepoAuth wires a repo so the tenant's own `git pull` in the checkout
+// works on its own: for a private (SSH) repo it persists the deploy key + host
+// keys in a tenant-owned dir and points the repo's core.sshCommand at them; for
+// a public (HTTPS) repo it clears any stale command (no key needed). Best-effort
+// — callers log failures but do not fail the deploy.
+func (m *Manager) InstallRepoAuth(ctx context.Context, r *store.Repo, uid, gid uint32) error {
+	if m.cfg.Dev {
+		return nil
+	}
+	if r.AuthMode == AuthPublic {
+		// --unset returns non-zero when the key is absent; that is not an error.
+		_, _ = m.runGit(ctx, r, uid, gid, r.CheckoutDir, "config", "--unset", "core.sshCommand")
+		_ = os.RemoveAll(m.repoAuthDir(r))
+		return nil
+	}
+	key, err := os.ReadFile(m.keyPath(r.ID))
+	if err != nil {
+		return fmt.Errorf("deploy key missing (regenerate it): %w", err)
+	}
+	dir := m.repoAuthDir(r)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	kp, kh := filepath.Join(dir, "key"), filepath.Join(dir, "known_hosts")
+	if err := os.WriteFile(kp, key, 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(kh, []byte(pinnedKnownHosts), 0o644); err != nil {
+		return err
+	}
+	// Owned by the tenant so their shell git can read them (dir 0700, key 0600),
+	// and unreadable by other tenants.
+	_ = os.Chown(dir, int(uid), int(gid))
+	_ = os.Chown(kp, int(uid), int(gid))
+	_ = os.Chown(kh, int(uid), int(gid))
+	ssh := "ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=15" +
+		" -o UserKnownHostsFile=" + shellQuote(kh) + " -i " + shellQuote(kp)
+	_, err = m.runGit(ctx, r, uid, gid, r.CheckoutDir, "config", "core.sshCommand", ssh)
+	return err
+}
+
+// RemoveRepoAuth deletes the durable deploy-key copy beside a checkout (on unlink).
+func (m *Manager) RemoveRepoAuth(r *store.Repo) { _ = os.RemoveAll(m.repoAuthDir(r)) }
+
 // CommitInfo describes a repo's checked-out HEAD commit for the deploy view.
 type CommitInfo struct {
 	Short   string // abbreviated SHA

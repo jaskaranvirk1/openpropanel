@@ -642,6 +642,24 @@ func (s *Store) RepoByID(id int64) (*Repo, error) {
 	return scanRepo(s.db.QueryRow(`SELECT `+repoCols+` FROM repos WHERE id = ?`, id))
 }
 
+// ListRepos returns every linked repository (used for startup reconciliation).
+func (s *Store) ListRepos() ([]*Repo, error) {
+	rows, err := s.db.Query(`SELECT ` + repoCols + ` FROM repos`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Repo
+	for rows.Next() {
+		r, err := scanRepo(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // RepoByProject returns the repository linked to a project (its parent site).
 func (s *Store) RepoByProject(siteID int64) (*Repo, error) {
 	return scanRepo(s.db.QueryRow(`SELECT `+repoCols+` FROM repos WHERE project_site_id = ?`, siteID))

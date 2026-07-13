@@ -76,6 +76,30 @@ fi
 log "Installing Open ProPanel binary -> $BIN_DEST"
 install -m 0755 "$BIN_SRC" "$BIN_DEST"
 
+# Terminal git helper: inside a site's checkout (owned by the site's non-root
+# user), plain `git pull`/`status`/`log` from an admin shell would trip git's
+# "dubious ownership" guard, and forcing it as root would leave root-owned files
+# that break the panel's next deploy. This drop-in makes git transparently run as
+# the checkout's owner — only for repos owned by ANOTHER non-root user; your own
+# root-owned repos are untouched. Remove the file to disable.
+log "Installing the terminal git helper (/etc/profile.d/openpropanel-git.sh)"
+install -d -m 0755 /etc/profile.d
+cat > /etc/profile.d/openpropanel-git.sh <<'EOF'
+# Managed by Open ProPanel. Runs git as the checkout's owner inside site repos so
+# `git pull` works from an admin shell (no sudo/-C, no "dubious ownership"). Only
+# repos owned by another non-root user are delegated; delete this file to disable.
+git() {
+    _opp_top=$(command git -c safe.directory='*' rev-parse --show-toplevel 2>/dev/null) || { command git "$@"; return; }
+    _opp_owner=$(stat -c '%U' "$_opp_top" 2>/dev/null)
+    if [ -n "$_opp_owner" ] && [ "$_opp_owner" != "root" ] && [ "$_opp_owner" != "$(id -un)" ] && command -v sudo >/dev/null 2>&1; then
+        sudo -u "$_opp_owner" -H -- git "$@"
+    else
+        command git "$@"
+    fi
+}
+EOF
+chmod 0644 /etc/profile.d/openpropanel-git.sh
+
 log "Creating config at $CONF_DIR"
 mkdir -p "$CONF_DIR"
 CONF="$CONF_DIR/config.json"
