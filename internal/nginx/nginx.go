@@ -141,7 +141,7 @@ server {
 {{define "nginxServe"}}
 {{- if eq .Mode "proxy"}}
     location / {
-        proxy_pass http://127.0.0.1:{{.Port}};
+        proxy_pass http://unix:{{.SocketPath}}:/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

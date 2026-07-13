@@ -9,9 +9,8 @@ func (s *Server) postSetApp(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	managed := r.FormValue("managed") == "1"
 	_, err := s.domains.SetProxyApp(r.Context(), site.ID,
-		r.FormValue("runtime"), r.FormValue("start_command"), r.FormValue("env"), managed)
+		r.FormValue("runtime"), r.FormValue("start_command"), r.FormValue("env"))
 	if err != nil {
 		s.backRedirect(w, r, "err", s.opErr(r, err))
 		return

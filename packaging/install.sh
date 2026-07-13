@@ -136,16 +136,32 @@ XML
     firewall-cmd --reload >/dev/null 2>&1 || true
 fi
 
+# Reverse-proxy apps: the run root holds one per-app dir each, in which a tenant
+# app creates its unix socket. It lives on tmpfs (/run), so systemd-tmpfiles must
+# recreate it every boot before any app unit starts.
+log "Provisioning the reverse-proxy app run root"
+install -d -m 0755 /etc/tmpfiles.d
+cat > /etc/tmpfiles.d/openpropanel.conf <<'EOF'
+# Managed by Open ProPanel — run root for reverse-proxied app sockets.
+d /run/openpropanel-apps 0755 root root -
+EOF
+systemd-tmpfiles --create /etc/tmpfiles.d/openpropanel.conf >/dev/null 2>&1 || \
+    install -d -m 0755 -o root -g root /run/openpropanel-apps
+
 if command -v restorecon >/dev/null 2>&1; then
-    log "Ensuring SELinux file context on the web root"
+    log "Ensuring SELinux file context on the web root + app sockets"
     # Apache <-> PHP-FPM over the /run/php-fpm unix socket is permitted by
     # default under enforcing SELinux, so no boolean is required. We only make
     # sure the web root is labelled so httpd may read it (matters if it was
     # relocated from the default /var/www).
     if command -v semanage >/dev/null 2>&1; then
         semanage fcontext -a -t httpd_sys_content_t '/var/www(/.*)?' 2>/dev/null || true
+        # Label the app-socket tree httpd_var_run_t so httpd/nginx (httpd_t) may
+        # connect(2) to the tenant-created sockets, like /run/php-fpm.
+        semanage fcontext -a -t httpd_var_run_t '/run/openpropanel-apps(/.*)?' 2>/dev/null || true
     fi
     restorecon -R /var/www 2>/dev/null || true
+    restorecon -R /run/openpropanel-apps 2>/dev/null || true
 fi
 
 log "Starting Open ProPanel"

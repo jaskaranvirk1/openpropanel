@@ -3,72 +3,18 @@ package domains
 import (
 	"context"
 	"errors"
-	"net"
-	"strconv"
 	"strings"
 
 	"github.com/openpropanel/openpropanel/internal/store"
 )
 
-// createAppWithPort allocates a free port and inserts the app row while holding
-// appMu, so the free-port scan and the insert are one critical section — two
-// concurrent enable-proxy calls can't both pick the same lowest-free port (the
-// loser would otherwise hit a raw apps.port UNIQUE error). The UNIQUE constraint
-// remains the final backstop.
-func (s *Service) createAppWithPort(siteID int64, runtime, startCmd, env string, managed bool) (*store.App, error) {
-	s.appMu.Lock()
-	defer s.appMu.Unlock()
-	port, err := s.freePortLocked()
-	if err != nil {
-		return nil, err
-	}
-	return s.store.CreateApp(&store.App{
-		SiteID: siteID, Port: port, Runtime: runtime,
-		StartCommand: startCmd, Managed: managed, Env: env,
-	})
-}
-
-// freePortLocked returns the lowest free port in the configured range that is
-// not already assigned to an app and not currently listening. The caller MUST
-// hold appMu (so the port stays free until the app row is inserted).
-func (s *Service) freePortLocked() (int, error) {
-	used, err := s.store.UsedPorts()
-	if err != nil {
-		return 0, err
-	}
-	lo, hi := s.cfg.AppPortMin, s.cfg.AppPortMax
-	if lo <= 0 {
-		lo = 3000
-	}
-	if hi < lo {
-		hi = 3999
-	}
-	for p := lo; p <= hi; p++ {
-		if used[p] {
-			continue
-		}
-		if s.cfg.Dev || portFree(p) {
-			return p, nil
-		}
-	}
-	return 0, errors.New("no free application port in the configured range")
-}
-
-// portFree reports whether nothing is already listening on 127.0.0.1:p.
-func portFree(p int) bool {
-	l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p)))
-	if err != nil {
-		return false
-	}
-	_ = l.Close()
-	return true
-}
-
-// SetProxyApp switches a managed site to reverse-proxy mode: allocate/keep a
-// port, persist the app config, flip WebMode=proxy, render the proxy vhost, and
-// (when managed) install + start the systemd unit that runs the start command
-// as the site's non-root tenant user.
-func (s *Service) SetProxyApp(ctx context.Context, siteID int64, runtime, startCmd, env string, managed bool) (*store.App, error) {
+// SetProxyApp switches a site to reverse-proxy mode and runs its app: it persists
+// the app config, flips WebMode=proxy, renders the proxy vhost (pointed at the
+// app's private unix socket), then installs + starts the systemd unit that runs
+// the start command as the site's non-root tenant user. Every proxy app is
+// panel-managed — a non-root tenant user and a start command are required (the
+// socket-isolation model has no place for an unsupervised, port-based app).
+func (s *Service) SetProxyApp(ctx context.Context, siteID int64, runtime, startCmd, env string) (*store.App, error) {
 	site, err := s.store.SiteByID(siteID)
 	if err != nil {
 		return nil, err
@@ -80,33 +26,36 @@ func (s *Service) SetProxyApp(ctx context.Context, siteID int64, runtime, startC
 	if err != nil {
 		return nil, errors.New("owner account not found")
 	}
-	// A managed app runs a process — it must have a non-root tenant user, exactly
-	// like git deploys (tenantIDs refuses uid/gid 0), and needs a command to run.
 	// Validate BEFORE any state mutation so a bad request can't flip a working
-	// site into a broken (502-ing) proxy and only then error out.
-	if managed {
-		if _, _, err := s.tenantIDs(site.UserID); err != nil {
-			return nil, err
-		}
-		if strings.TrimSpace(startCmd) == "" {
-			return nil, errors.New("a start command is required to run the app")
-		}
+	// site into a broken (502-ing) proxy and only then error out: the app must
+	// have a non-root tenant user (like git deploys — tenantIDs refuses uid/gid 0)
+	// and a command to run.
+	if _, _, err := s.tenantIDs(site.UserID); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(startCmd) == "" {
+		return nil, errors.New("a start command is required to run the app")
 	}
 
 	app, err := s.store.AppBySite(siteID)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		app, err = s.createAppWithPort(siteID, runtime, startCmd, env, managed)
+		// port is a legacy NOT NULL UNIQUE column; the socket addresses the app now,
+		// so store the (unique) site id in it as an inert value.
+		app, err = s.store.CreateApp(&store.App{
+			SiteID: siteID, Port: int(siteID), Runtime: runtime,
+			StartCommand: startCmd, Managed: true, Env: env,
+		})
 		if err != nil {
 			return nil, err
 		}
 	case err != nil:
 		return nil, err
 	default:
-		if err := s.store.UpdateApp(app.ID, runtime, startCmd, env, managed); err != nil {
+		if err := s.store.UpdateApp(app.ID, runtime, startCmd, env, true); err != nil {
 			return nil, err
 		}
-		app.Runtime, app.StartCommand, app.Env, app.Managed = runtime, startCmd, env, managed
+		app.Runtime, app.StartCommand, app.Env, app.Managed = runtime, startCmd, env, true
 	}
 
 	if err := s.store.SetSiteServe(siteID, site.DocRoot, store.WebModeProxy); err != nil {
@@ -120,21 +69,16 @@ func (s *Service) SetProxyApp(ctx context.Context, siteID int64, runtime, startC
 		return nil, err
 	}
 
-	if managed {
-		if err := s.appserver.Configure(ctx, app, site, owner.SystemUser); err != nil {
-			_ = s.store.SetAppStatus(app.ID, "error")
-			return nil, err
-		}
-		_ = s.store.SetAppStatus(app.ID, "running")
-	} else {
-		_ = s.appserver.Remove(ctx, site.Domain)
-		_ = s.store.SetAppStatus(app.ID, "unmanaged")
+	if err := s.appserver.Configure(ctx, app, site, owner.SystemUser); err != nil {
+		_ = s.store.SetAppStatus(app.ID, "error")
+		return nil, err
 	}
+	_ = s.store.SetAppStatus(app.ID, "running")
 	return app, nil
 }
 
-// removeAppFor tears down a site's app unit and drops its row (freeing the
-// port). Called when a site leaves proxy mode or is deleted.
+// removeAppFor tears down a site's app unit + socket dir and drops its row.
+// Called when a site leaves proxy mode or is deleted.
 func (s *Service) removeAppFor(ctx context.Context, site *store.Site) {
 	app, err := s.store.AppBySite(site.ID)
 	if err != nil {
@@ -204,26 +148,45 @@ func (s *Service) AppLogs(ctx context.Context, siteID int64, n int) (string, err
 	return s.appserver.Logs(ctx, site.Domain, n)
 }
 
-// ReconcileApps regenerates and restarts every managed app unit at startup, so
-// units survive a panel upgrade or a wiped /etc/systemd (the DB is the source
-// of truth).
+// ReconcileApps regenerates and restarts every managed app unit at startup (so
+// units + socket dirs survive a panel upgrade, a wiped /etc/systemd, or a tmpfs
+// reboot — the DB is the source of truth), then re-renders managed vhosts so the
+// on-disk web-server config matches the DB. The vhost re-render is what carries
+// an upgrade across a transport change: a v0.11.0 proxy site's vhost still points
+// at a now-dead TCP port until it is rewritten to the app's unix socket, and a
+// site the migration reverted from a retired unmanaged proxy needs its file-mode
+// vhost written. Best-effort and per-item so one bad site can't abort the rest.
 func (s *Service) ReconcileApps(ctx context.Context) {
-	apps, err := s.store.ListManagedApps()
+	if apps, err := s.store.ListManagedApps(); err == nil {
+		for _, app := range apps {
+			site, err := s.store.SiteByID(app.SiteID)
+			if err != nil || site.Source != store.SourceManaged {
+				continue
+			}
+			owner, err := s.store.UserByID(site.UserID)
+			if err != nil || owner.SystemUser == "" {
+				continue
+			}
+			if _, _, err := s.tenantIDs(site.UserID); err != nil {
+				continue
+			}
+			_ = s.appserver.Configure(ctx, app, site, owner.SystemUser)
+		}
+	}
+	sites, err := s.store.ListSites()
 	if err != nil {
 		return
 	}
-	for _, app := range apps {
-		site, err := s.store.SiteByID(app.SiteID)
-		if err != nil || site.Source != store.SourceManaged {
-			continue
+	rendered := false
+	for _, site := range sites {
+		if site.Source != store.SourceManaged {
+			continue // imported sites are read-only until adopted
 		}
-		owner, err := s.store.UserByID(site.UserID)
-		if err != nil || owner.SystemUser == "" {
-			continue
+		if err := s.renderVHost(site); err == nil {
+			rendered = true
 		}
-		if _, _, err := s.tenantIDs(site.UserID); err != nil {
-			continue
-		}
-		_ = s.appserver.Configure(ctx, app, site, owner.SystemUser)
+	}
+	if rendered {
+		_ = s.web().Apply(ctx)
 	}
 }

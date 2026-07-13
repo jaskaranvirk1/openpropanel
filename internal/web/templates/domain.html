@@ -97,10 +97,10 @@
       <h2 class="text-sm font-semibold text-zinc-900">Application</h2>
       <span class="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-emerald-700">reverse proxy</span>
     </div>
-    <p class="mb-4 text-xs text-zinc-500">This domain forwards to your app on <span class="font-mono">127.0.0.1:{{with $d.App}}{{.Port}}{{end}}</span>.</p>
+    <p class="mb-4 text-xs text-zinc-500">This domain forwards to your app over a private unix socket.</p>
     {{template "appForm" (dict "D" $d)}}
 
-    {{if and $d.App $d.App.Managed}}
+    {{if $d.App}}
     <div class="mt-4 flex flex-wrap items-center gap-2 border-t border-zinc-100 pt-4">
       <span class="text-sm text-zinc-600">Status: {{if $d.AppActive}}<span class="font-medium text-emerald-600">running</span>{{else}}<span class="font-medium text-zinc-500">stopped</span>{{end}}</span>
       <div class="ml-auto flex flex-wrap gap-2">
@@ -213,29 +213,20 @@
 {{$d := .D}}{{$s := $d.Site}}
 <form method="post" action="/domains/{{$s.ID}}/app" class="space-y-3">
   <input type="hidden" name="return" value="{{$d.Detail}}">
-  <div class="grid gap-3 sm:grid-cols-2">
-    <div>
-      <label class="opp-lbl">Runtime</label>
-      <select name="runtime" class="opp-select">{{range $d.Runtimes}}<option value="{{.}}" {{if and $d.App (eq . $d.App.Runtime)}}selected{{end}}>{{.}}</option>{{end}}</select>
-    </div>
-    <div>
-      <label class="opp-lbl">Port</label>
-      <input value="{{if $d.App}}{{$d.App.Port}}{{else}}assigned on save{{end}}" readonly class="opp-input bg-zinc-50 font-mono text-xs text-zinc-500">
-    </div>
+  <div>
+    <label class="opp-lbl">Runtime</label>
+    <select name="runtime" class="opp-select">{{range $d.Runtimes}}<option value="{{.}}" {{if and $d.App (eq . $d.App.Runtime)}}selected{{end}}>{{.}}</option>{{end}}</select>
   </div>
   <div>
     <label class="opp-lbl">Start command</label>
     <input name="start_command" value="{{if $d.App}}{{$d.App.StartCommand}}{{end}}" placeholder="node server.js · npm start · gunicorn app:app" class="opp-input font-mono text-xs">
-    <p class="mt-1 text-[11px] text-zinc-400">Runs in the folder above as your site user. Your app must listen on the port in <span class="font-mono">$PORT</span>.</p>
+    <p class="mt-1 text-[11px] leading-relaxed text-zinc-400">Runs in the folder above as your site user, kept alive (starts on boot, restarts on crash). <span class="font-mono">$PORT</span> holds a unix-socket path — listen on it, don't parse it as a number:
+      <br>Node <span class="font-mono">app.listen(process.env.PORT)</span> · gunicorn <span class="font-mono">-b unix:$PORT</span> · uvicorn <span class="font-mono">--uds $PORT</span></p>
   </div>
   <div>
     <label class="opp-lbl">Environment <span class="font-normal text-zinc-400">— KEY=value per line, optional</span></label>
     <textarea name="env" rows="3" placeholder="NODE_ENV=production" class="opp-input font-mono text-xs">{{if $d.App}}{{$d.App.Env}}{{end}}</textarea>
   </div>
-  <label class="flex items-center gap-2 text-sm text-zinc-700">
-    <input type="checkbox" name="managed" value="1" {{if or (not $d.App) $d.App.Managed}}checked{{end}} class="rounded border-zinc-300 text-blue-600">
-    Keep it running — start on boot, restart on crash
-  </label>
   <button class="opp-btn-primary">{{if eq $s.WebMode "proxy"}}Save app{{else}}Enable reverse proxy{{end}}</button>
 </form>
 {{end}}

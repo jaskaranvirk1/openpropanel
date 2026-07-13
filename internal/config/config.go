@@ -43,11 +43,6 @@ type Config struct {
 	// PHPFPMConfDir is where per-site php-fpm pool files are written.
 	PHPFPMConfDir string `json:"php_fpm_conf_dir"`
 
-	// AppPortMin/AppPortMax bound the loopback port range assigned to
-	// reverse-proxied applications.
-	AppPortMin int `json:"app_port_min"`
-	AppPortMax int `json:"app_port_max"`
-
 	// ApacheService / NginxService / PHPFPMService are systemd unit names.
 	ApacheService string `json:"apache_service"`
 	NginxService  string `json:"nginx_service"`
@@ -117,8 +112,6 @@ func Default() *Config {
 		// (/var/lib/openpropanel) so the unprivileged phpMyAdmin pool user can
 		// traverse in to read the app files.
 		PMARoot: "/var/lib/openpropanel-pma",
-		AppPortMin: 3000,
-		AppPortMax: 3999,
 	}
 
 	if runtime.GOOS != "linux" {
@@ -171,6 +164,16 @@ func (c *Config) AppUnitDir() string {
 		return filepath.Join(c.DataDir, "systemd")
 	}
 	return "/etc/systemd/system"
+}
+
+// AppRunDir is the run root holding one per-app subdirectory each, in which the
+// tenant app creates its reverse-proxy unix socket. On tmpfs in prod (wiped on
+// reboot; recreated by tmpfiles.d + the panel).
+func (c *Config) AppRunDir() string {
+	if c.Dev {
+		return filepath.Join(c.DataDir, "run", "apps")
+	}
+	return "/run/openpropanel-apps"
 }
 
 // PhpMyAdminDir is where the phpMyAdmin app files live.

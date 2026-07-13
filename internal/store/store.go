@@ -101,16 +101,18 @@ type Repo struct {
 	CreatedAt     time.Time
 }
 
-// App is a reverse-proxied application attached to a site: the local port its
-// vhost forwards to, and (when Managed) the start command the panel supervises
-// via a systemd unit running as the site's tenant user.
+// App is a reverse-proxied application attached to a site: the start command the
+// panel supervises via a systemd unit running as the site's tenant user. The
+// vhost forwards to the app over a private per-tenant unix socket.
 type App struct {
-	ID           int64
-	SiteID       int64
+	ID     int64
+	SiteID int64
+	// Port is a legacy NOT NULL UNIQUE column (the app is addressed by unix
+	// socket now); it is populated with the site id as an inert unique value.
 	Port         int
 	Runtime      string // "node" | "python" | "custom" (label only)
 	StartCommand string
-	Managed      bool // panel supervises the process via systemd
+	Managed      bool   // panel supervises the process via systemd (always true)
 	Env          string // newline-separated KEY=VALUE
 	LastStatus   string
 	CreatedAt    time.Time
@@ -271,6 +273,26 @@ CREATE INDEX IF NOT EXISTS idx_dbusers_user ON db_users(user_id);
 		`ALTER TABLE repos ADD COLUMN detect_note TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := s.db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+	// Ship C data migration (idempotent). Reverse-proxy apps moved from shared
+	// TCP loopback ports to per-tenant unix sockets, and the "unmanaged" proxy
+	// mode was retired:
+	//  - Convert supervisable unmanaged apps (they have a start command) to managed
+	//    so ReconcileApps materialises their socket + unit.
+	//  - Drop the rest and revert their site to serving files, so its vhost no
+	//    longer points at a socket nothing will ever create (which would 502).
+	//  - Align every app's legacy `port` with its site_id: the column is now an
+	//    inert NOT NULL UNIQUE mirror of site_id, so new inserts (port = site_id)
+	//    can never collide with a stale allocated value from the old range.
+	for _, stmt := range []string{
+		`UPDATE sites SET web_mode = 'php' WHERE id IN (SELECT site_id FROM apps WHERE managed = 0 AND TRIM(start_command) = '')`,
+		`DELETE FROM apps WHERE managed = 0 AND TRIM(start_command) = ''`,
+		`UPDATE apps SET managed = 1 WHERE managed = 0`,
+		`UPDATE apps SET port = site_id`,
+	} {
+		if _, err := s.db.Exec(stmt); err != nil {
 			return err
 		}
 	}
@@ -769,24 +791,6 @@ func (s *Store) ListManagedApps() ([]*App, error) {
 			return nil, err
 		}
 		out = append(out, a)
-	}
-	return out, rows.Err()
-}
-
-// UsedPorts returns the set of ports currently allocated to apps.
-func (s *Store) UsedPorts() (map[int]bool, error) {
-	rows, err := s.db.Query(`SELECT port FROM apps`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[int]bool{}
-	for rows.Next() {
-		var p int
-		if err := rows.Scan(&p); err != nil {
-			return nil, err
-		}
-		out[p] = true
 	}
 	return out, rows.Err()
 }

@@ -166,8 +166,8 @@ var vhostTmpl = template.Must(template.New("vhost").Parse(`# Managed by Open Pro
     RequestHeader set X-Forwarded-Proto "{{if .SSL}}https{{else}}http{{end}}"
     # Serve the ACME challenge from disk (never proxy it) so certbot keeps working.
     ProxyPass /.well-known/acme-challenge/ !
-    ProxyPass / http://127.0.0.1:{{.Port}}/ retry=0
-    ProxyPassReverse / http://127.0.0.1:{{.Port}}/
+    ProxyPass / unix:{{.SocketPath}}|http://localhost/ retry=0
+    ProxyPassReverse / http://localhost/
 {{- else}}
     <Directory "{{.DocRoot}}">
         Options -Indexes +SymLinksIfOwnerMatch

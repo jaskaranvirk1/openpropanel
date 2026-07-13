@@ -51,7 +51,6 @@ type Service struct {
 	switchMu  sync.Mutex // serializes web-server switches
 	accountMu sync.Mutex // serializes account deletion (last-admin guard)
 	tenantMu  sync.Mutex // serializes JIT system-user provisioning (ensureTenant)
-	appMu     sync.Mutex // serializes app-port allocation
 
 	jobMu sync.Mutex         // guards jobs
 	jobs  map[int64]*repoJob // background clone/deploy jobs, keyed by PROJECT site ID
@@ -686,6 +685,10 @@ func (s *Service) SwitchWebServer(ctx context.Context, target string) error {
 			reErr = err
 		}
 	}
+	// 5b. Re-provision each managed app's socket dir to the NEW web-server group
+	//     and restart it so the live socket is re-created with that group;
+	//     otherwise the new server (a different group) cannot connect.
+	s.ReconcileApps(ctx)
 	// 6. Remove the now-inactive server's stale per-site configs (managed only —
 	//    never delete a config the panel did not create).
 	for _, site := range sites {
@@ -968,13 +971,14 @@ func (s *Service) renderVHost(site *store.Site) error {
 	if vh.Mode == "" {
 		vh.Mode = store.WebModePHP
 	}
-	// A proxy vhost forwards to the app's loopback port instead of serving files.
+	// A proxy vhost forwards to the app's private unix socket instead of serving
+	// files. Confirm an app is configured; the socket path is derived from the
+	// (validated) domain.
 	if vh.Mode == store.WebModeProxy {
-		app, err := s.store.AppBySite(site.ID)
-		if err != nil {
-			return fmt.Errorf("proxy site %s has no app/port configured: %w", site.Domain, err)
+		if _, err := s.store.AppBySite(site.ID); err != nil {
+			return fmt.Errorf("proxy site %s has no app configured: %w", site.Domain, err)
 		}
-		vh.Port = app.Port
+		vh.SocketPath = s.appserver.SocketPath(site.Domain)
 	}
 	if site.Type == store.SiteMain {
 		vh.ServerAlias = "www." + site.Domain

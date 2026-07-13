@@ -30,6 +30,66 @@ func seedProject(t *testing.T, s *Store) (userID, siteID int64) {
 	return u.ID, site.ID
 }
 
+// The Ship C migration retires unmanaged proxy apps and turns the legacy port
+// column into an inert site_id mirror. It must: convert an unmanaged app that
+// has a start command to managed; drop an unmanaged app with no command and
+// revert its site to files; and align every app's port with its site_id.
+func TestShipCAppMigration(t *testing.T) {
+	s := openTemp(t)
+	u, _ := seedProject(t, s)
+
+	mk := func(domain string) int64 {
+		site, err := s.CreateSite(&Site{UserID: u, Domain: domain, Type: SiteMain, DocRoot: "/var/www/" + domain, WebMode: WebModeProxy})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return site.ID
+	}
+	withCmd := mk("withcmd.com")    // unmanaged + command -> becomes managed
+	noCmd := mk("nocmd.com")        // unmanaged + no command -> dropped, site -> php
+	alreadyMgd := mk("managed.com") // already managed -> port realigned
+
+	// Insert legacy rows directly (CreateApp now forces managed + port=site_id),
+	// using stale ports from the retired 3000-3999 range.
+	for _, r := range []struct {
+		siteID  int64
+		port    int
+		cmd     string
+		managed int
+	}{
+		{withCmd, 3000, "node server.js", 0},
+		{noCmd, 3001, "", 0},
+		{alreadyMgd, 3002, "npm start", 1},
+	} {
+		if _, err := s.db.Exec(`INSERT INTO apps (site_id, port, runtime, start_command, managed, env, last_status, created_at) VALUES (?,?,'node',?,?,'','',0)`,
+			r.siteID, r.port, r.cmd, r.managed); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := s.migrate(); err != nil { // idempotent re-run applies the migration
+		t.Fatalf("migrate: %v", err)
+	}
+
+	// withCmd: converted to managed, port aligned to its site_id.
+	if app, err := s.AppBySite(withCmd); err != nil {
+		t.Fatalf("withCmd app should survive: %v", err)
+	} else if !app.Managed || app.Port != int(withCmd) {
+		t.Errorf("withCmd: managed=%v port=%d, want managed=true port=%d", app.Managed, app.Port, withCmd)
+	}
+	// noCmd: app dropped, site reverted to files.
+	if _, err := s.AppBySite(noCmd); err == nil {
+		t.Error("noCmd app should have been deleted")
+	}
+	if site, err := s.SiteByID(noCmd); err != nil || site.WebMode != WebModePHP {
+		t.Errorf("noCmd site web_mode=%q, want php", site.WebMode)
+	}
+	// alreadyMgd: stays managed, port realigned to site_id.
+	if app, err := s.AppBySite(alreadyMgd); err != nil || app.Port != int(alreadyMgd) {
+		t.Errorf("alreadyMgd port=%d, want %d", app.Port, alreadyMgd)
+	}
+}
+
 func TestRepoRoundtripPreservesWebhookAndNote(t *testing.T) {
 	s := openTemp(t)
 	_, siteID := seedProject(t, s)

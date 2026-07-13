@@ -44,14 +44,46 @@ func TestCommandNeverInUnit(t *testing.T) {
 	if !strings.Contains(u, "ExecStart=/bin/bash "+m.scriptPath("app.com")) {
 		t.Error("unit must exec the run-script, not the command")
 	}
+	// PORT carries the socket path and is set AFTER EnvironmentFile so it always wins.
+	if !strings.Contains(u, "Environment=PORT="+m.SocketPath("app.com")) {
+		t.Errorf("unit PORT must be the socket path:\n%s", u)
+	}
+	if strings.Index(u, "EnvironmentFile=") > strings.Index(u, "Environment=PORT=") {
+		t.Error("Environment=PORT must come AFTER EnvironmentFile so the panel value wins")
+	}
 
-	// The command lands in the run-script, execed on the last line.
+	// The command lands in the run-script, execed on the last line, after a umask
+	// tightening and a stale-socket cleanup.
 	script, err := os.ReadFile(m.scriptPath("app.com"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(script), "exec node server.js") {
-		t.Errorf("run-script should exec the tenant command:\n%s", script)
+	sc := string(script)
+	if !strings.Contains(sc, "exec node server.js") {
+		t.Errorf("run-script should exec the tenant command:\n%s", sc)
+	}
+	if !strings.Contains(sc, "umask 0007") {
+		t.Error("run-script should tighten umask so the socket is group-connectable")
+	}
+	if !strings.Contains(sc, "rm -f '"+m.SocketPath("app.com")+"'") {
+		t.Errorf("run-script should clear a stale socket before exec:\n%s", sc)
+	}
+}
+
+// Configure creates the per-app socket directory (owner/mode are enforced only
+// on Linux; here we just confirm the dir + path scheme exist in dev).
+func TestConfigureCreatesSocketDir(t *testing.T) {
+	m := devManager(t)
+	app := &store.App{Port: 3200, StartCommand: "node x"}
+	site := &store.Site{Domain: "sock.com", DocRoot: "/srv/s"}
+	if err := m.Configure(context.Background(), app, site, "tenant7"); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(m.socketDir("sock.com")); err != nil || !fi.IsDir() {
+		t.Fatalf("socket dir not created: %v", err)
+	}
+	if got, want := m.SocketPath("sock.com"), filepath.Join(m.socketDir("sock.com"), "app.sock"); got != want {
+		t.Errorf("SocketPath = %q, want %q", got, want)
 	}
 }
 

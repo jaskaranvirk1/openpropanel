@@ -18,10 +18,11 @@ type VHost struct {
 	// Mode selects how the doc root is served: "php" (PHP-FPM + index.php),
 	// "static" (plain files), "spa" (unknown paths fall back to index.html for
 	// client-side-routed apps like Angular/React), or "proxy" (reverse-proxy to
-	// a local app on Port). Empty is treated as php.
+	// a local app over SocketPath). Empty is treated as php.
 	Mode string
-	// Port is the loopback port a "proxy" vhost forwards to (0 for other modes).
-	Port int
+	// SocketPath is the app's private unix socket a "proxy" vhost forwards to
+	// (empty for other modes).
+	SocketPath string
 }
 
 // Manager is implemented by each web-server backend (Apache, Nginx).

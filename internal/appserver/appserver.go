@@ -15,8 +15,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	osuser "os/user"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -44,6 +46,16 @@ func (m *Manager) unitPath(domain string) string {
 	return filepath.Join(m.cfg.AppUnitDir(), UnitName(domain))
 }
 
+// socketDir is the per-app run directory (owned tenant:<webserver-group>, 2770);
+// SocketPath is the unix socket inside it that the app listens on and the web
+// server reverse-proxies to.
+func (m *Manager) socketDir(domain string) string {
+	return filepath.Join(m.cfg.AppRunDir(), domain)
+}
+func (m *Manager) SocketPath(domain string) string {
+	return filepath.Join(m.socketDir(domain), "app.sock")
+}
+
 var envKeyRe = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 
 // Configure writes the run-script, env file and unit, then enables + restarts.
@@ -62,11 +74,26 @@ func (m *Manager) Configure(ctx context.Context, app *store.App, site *store.Sit
 	}
 	_ = os.Chmod(m.cfg.AppConfDir(), 0o755)
 
+	// Per-app run directory: owned tenant:<webserver-group>, mode 2770 (setgid) so
+	// the socket the tenant app creates inside inherits the web-server group and is
+	// reachable ONLY by that tenant and the web server — no other tenant can
+	// traverse, create, unlink or squat inside it (the run root is root-owned 0755).
+	if err := m.provisionSocketDir(site.Domain, systemUser); err != nil {
+		return err
+	}
+
 	// Run-script (root-owned, world-readable so the tenant can exec it; it holds
-	// only the tenant's own non-secret command). `exec` is the last line, so a
-	// stray newline in the command can only append lines that also run as the
-	// tenant — no escalation into the unit.
-	script := "#!/usr/bin/env bash\n# Managed by Open ProPanel — do not edit by hand.\nset -euo pipefail\nexec " + cmd + "\n"
+	// only the tenant's own non-secret command). `umask 0007` makes the app's
+	// socket group-connectable (0770); `rm -f` clears a stale socket left by a
+	// crash (Node/uvicorn don't). `exec` is the last line, so a stray newline in
+	// the command can only append lines that also run as the tenant — no
+	// escalation into the unit.
+	script := "#!/usr/bin/env bash\n" +
+		"# Managed by Open ProPanel — do not edit by hand.\n" +
+		"set -euo pipefail\n" +
+		"umask 0007\n" +
+		"rm -f " + shellQuote(m.SocketPath(site.Domain)) + "\n" +
+		"exec " + cmd + "\n"
 	if err := os.WriteFile(m.scriptPath(site.Domain), []byte(script), 0o755); err != nil {
 		return err
 	}
@@ -106,16 +133,78 @@ func (m *Manager) Remove(ctx context.Context, domain string) error {
 	_ = os.Remove(m.unitPath(domain))
 	_ = os.Remove(m.scriptPath(domain))
 	_ = os.Remove(m.envPath(domain))
+	_ = os.RemoveAll(m.socketDir(domain)) // per-app run dir + any leftover socket
 	if !m.cfg.Dev {
 		return system.DaemonReload(ctx)
 	}
 	return nil
 }
 
+// provisionSocketDir creates the run root and the per-app socket directory with
+// owner tenant:<webserver-group> and mode 2770 (setgid). In dev (non-Linux) the
+// ownership/mode dance is skipped — only the directory is created so paths exist.
+func (m *Manager) provisionSocketDir(domain, systemUser string) error {
+	if err := os.MkdirAll(m.cfg.AppRunDir(), 0o755); err != nil {
+		return err
+	}
+	dir := m.socketDir(domain)
+	if err := os.MkdirAll(dir, 0o770); err != nil {
+		return err
+	}
+	if m.cfg.Dev {
+		return nil
+	}
+	uid, err := lookupUID(systemUser)
+	if err != nil {
+		return err
+	}
+	gid, err := lookupGID(m.cfg.WebServerUser())
+	if err != nil {
+		return err
+	}
+	if err := os.Chown(dir, uid, gid); err != nil {
+		return err
+	}
+	// os.ModeSetgid (not octal 0o2000) is how Go encodes the setgid bit; a bare
+	// 0o2770 would silently yield a plain 0770 dir and break group inheritance.
+	if err := os.Chmod(dir, 0o770|os.ModeSetgid); err != nil {
+		return err
+	}
+	// /run is tmpfs and starts unlabeled; relabel so the web server (httpd_t under
+	// SELinux enforcing) may connect to sockets created here. Best-effort: relies
+	// on the fcontext rule the installer adds; a no-op when SELinux is off.
+	_, _ = system.Run(context.Background(), "restorecon", "-R", dir)
+	return nil
+}
+
+// lookupUID / lookupGID resolve a system user / group name to its numeric id.
+func lookupUID(name string) (int, error) {
+	u, err := osuser.Lookup(name)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(u.Uid)
+}
+func lookupGID(name string) (int, error) {
+	g, err := osuser.LookupGroup(name)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(g.Gid)
+}
+
+// shellQuote wraps s in single quotes for safe use in the run-script (the path
+// is panel-derived from a validated domain, so this is hygiene, not a barrier).
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // Start / Stop / Restart control a configured app unit.
-func (m *Manager) Start(ctx context.Context, domain string) error   { return m.svc(ctx, "start", domain) }
-func (m *Manager) Stop(ctx context.Context, domain string) error    { return m.svc(ctx, "stop", domain) }
-func (m *Manager) Restart(ctx context.Context, domain string) error { return m.svc(ctx, "restart", domain) }
+func (m *Manager) Start(ctx context.Context, domain string) error { return m.svc(ctx, "start", domain) }
+func (m *Manager) Stop(ctx context.Context, domain string) error  { return m.svc(ctx, "stop", domain) }
+func (m *Manager) Restart(ctx context.Context, domain string) error {
+	return m.svc(ctx, "restart", domain)
+}
 
 func (m *Manager) svc(ctx context.Context, action, domain string) error {
 	if m.cfg.Dev {
@@ -144,14 +233,15 @@ func (m *Manager) renderUnit(app *store.App, site *store.Site, user string) stri
 	var b strings.Builder
 	_ = unitTmpl.Execute(&b, unitData{
 		Domain: site.Domain, User: user, Group: user, WorkingDir: site.DocRoot,
-		Port: app.Port, EnvFile: m.envPath(site.Domain), ScriptPath: m.scriptPath(site.Domain),
+		SocketPath: m.SocketPath(site.Domain),
+		EnvFile:    m.envPath(site.Domain), ScriptPath: m.scriptPath(site.Domain),
 	})
 	return b.String()
 }
 
 type unitData struct {
 	Domain, User, Group, WorkingDir string
-	Port                            int
+	SocketPath                      string
 	EnvFile, ScriptPath             string
 }
 
@@ -189,7 +279,9 @@ func renderEnv(env string) string {
 }
 
 // unitTmpl is the fixed systemd unit — only vetted, panel-controlled values are
-// interpolated (User/WorkingDir/Port/paths); the tenant command is not here.
+// interpolated (User/WorkingDir/socket path/paths); the tenant command is not
+// here. PORT holds the unix-socket path the app must listen on; it is set AFTER
+// EnvironmentFile so the panel's value always wins over anything in user env.
 var unitTmpl = template.Must(template.New("unit").Parse(`# Managed by Open ProPanel — do not edit by hand.
 [Unit]
 Description=Open ProPanel app: {{.Domain}}
@@ -201,8 +293,8 @@ Type=simple
 User={{.User}}
 Group={{.Group}}
 WorkingDirectory={{.WorkingDir}}
-Environment=PORT={{.Port}}
 EnvironmentFile=-{{.EnvFile}}
+Environment=PORT={{.SocketPath}}
 ExecStart=/bin/bash {{.ScriptPath}}
 Restart=always
 RestartSec=3

@@ -151,10 +151,10 @@ func (s *Server) getDomain(w http.ResponseWriter, r *http.Request) {
 	if tab != "deployment" && tab != "ssl" {
 		tab = "overview"
 	}
-	// Reverse-proxy app (if any) + live unit status for managed apps.
+	// Reverse-proxy app (if any) + its live unit status.
 	app := s.domains.AppFor(site.ID)
 	var appActive, appEnabled bool
-	if app != nil && app.Managed {
+	if app != nil {
 		appActive, appEnabled = s.domains.AppStatus(r.Context(), site.ID)
 	}
 	s.render.page(w, http.StatusOK, "domain", pageData{

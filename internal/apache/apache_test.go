@@ -54,27 +54,28 @@ func TestApacheServingModes(t *testing.T) {
 	}
 }
 
-// Proxy mode forwards to a hard-coded 127.0.0.1:<port> loopback target while
+// Proxy mode forwards to the app's private unix socket (un-squattable) while
 // keeping the ACME challenge served from disk (so certbot keeps working) and
 // never running PHP.
 func TestApacheProxyMode(t *testing.T) {
-	vh := webserver.VHost{Domain: "app.com", DocRoot: "/srv/app", Mode: "proxy", Port: 3123}
+	sock := "/run/openpropanel-apps/app.com/app.sock"
+	vh := webserver.VHost{Domain: "app.com", DocRoot: "/srv/app", Mode: "proxy", SocketPath: sock}
 	out := renderApache(t, vh)
-	if !strings.Contains(out, "ProxyPass / http://127.0.0.1:3123/ retry=0") {
-		t.Error("proxy mode should forward / to the loopback app port")
+	if !strings.Contains(out, "ProxyPass / unix:"+sock+"|http://localhost/ retry=0") {
+		t.Error("proxy mode should forward / to the app's unix socket")
 	}
 	if !strings.Contains(out, "ProxyPass /.well-known/acme-challenge/ !") {
 		t.Error("proxy mode must exclude the ACME challenge from proxying")
 	}
-	if !strings.Contains(out, "ProxyPassReverse / http://127.0.0.1:3123/") {
+	if !strings.Contains(out, "ProxyPassReverse / http://localhost/") {
 		t.Error("proxy mode should rewrite redirect headers back")
 	}
 	if strings.Contains(out, "SetHandler") {
 		t.Error("proxy mode should not run PHP")
 	}
-	// The target must be loopback only — never the public host or a tenant value.
-	if strings.Contains(out, "ProxyPass / http://"+vh.Domain) {
-		t.Error("proxy target must be 127.0.0.1, not the domain")
+	// No TCP loopback target — the socket path is the only upstream.
+	if strings.Contains(out, "127.0.0.1") {
+		t.Error("proxy target must be the unix socket, not a TCP port")
 	}
 }
 
