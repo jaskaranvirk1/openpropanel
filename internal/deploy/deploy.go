@@ -356,5 +356,32 @@ func (m *Manager) Deploy(ctx context.Context, r *store.Repo, uid, gid uint32) (s
 	return strings.TrimSpace(out), err
 }
 
+// CommitInfo describes a repo's checked-out HEAD commit for the deploy view.
+type CommitInfo struct {
+	Short   string // abbreviated SHA
+	Subject string // commit message subject line
+	Author  string // author name
+	When    string // git's relative date, e.g. "3 hours ago"
+}
+
+// HeadInfo reads the checked-out HEAD commit's details, run as the tenant. Used
+// by the Deployment tab; best-effort (callers ignore the error).
+func (m *Manager) HeadInfo(ctx context.Context, r *store.Repo, uid, gid uint32) (*CommitInfo, error) {
+	if m.cfg.Dev {
+		return &CommitInfo{Short: "devcommit", Subject: "(dev) latest commit", Author: "dev", When: "just now"}, nil
+	}
+	// %x1f = ASCII unit separator: an unambiguous field delimiter that can't
+	// appear in a commit subject or author name.
+	out, err := m.runGit(ctx, r, uid, gid, r.CheckoutDir, "log", "-1", "--format=%h%x1f%s%x1f%an%x1f%cr")
+	if err != nil {
+		return nil, err
+	}
+	f := strings.Split(strings.TrimSpace(out), "\x1f")
+	if len(f) < 4 {
+		return nil, errors.New("unexpected git log output")
+	}
+	return &CommitInfo{Short: f[0], Subject: f[1], Author: f[2], When: f[3]}, nil
+}
+
 // shellQuote single-quotes a path for embedding in GIT_SSH_COMMAND.
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

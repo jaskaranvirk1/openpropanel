@@ -176,6 +176,19 @@
 {{else}}
 {{template "deployStatus" (dict "Repo" $repo "Pid" $s.ID "Host" $d.Host)}}
 {{if $repo}}
+{{with $d.Head}}
+<div class="opp-card mt-4 p-5">
+  <h2 class="mb-3 text-sm font-semibold text-zinc-900">Last commit</h2>
+  <div class="flex items-start gap-3">
+    <span class="mt-0.5 flex-none rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-xs text-zinc-600">{{.Short}}</span>
+    <div class="min-w-0">
+      <p class="break-words text-sm text-zinc-800">{{.Subject}}</p>
+      <p class="mt-0.5 text-xs text-zinc-400">{{.Author}} · {{.When}}</p>
+    </div>
+  </div>
+</div>
+{{end}}
+
 <div class="opp-card mt-4 p-5">
   <h2 class="mb-1 text-sm font-semibold text-zinc-900">Folders</h2>
   <p class="mb-3 text-xs text-zinc-500">Each domain serves a folder of this repository — edit on its Overview tab.</p>
@@ -184,6 +197,23 @@
     {{range $d.Subs}}{{template "folderRow" (dict "S" .)}}{{end}}
   </div>
 </div>
+
+{{if $d.SystemUser}}
+<div class="opp-card mt-4 p-5">
+  <h2 class="mb-1 text-sm font-semibold text-zinc-900">Deploy from your terminal</h2>
+  <p class="mb-3 text-xs text-zinc-500">The panel deploys as this site's user, so the checkout is owned by <span class="font-mono text-zinc-700">{{$d.SystemUser}}</span>. Run git as that user — not <span class="font-mono text-zinc-700">root</span>, which trips git's “dubious ownership” error.</p>
+  {{$pull := printf "sudo -u %s git -C %s pull" $d.SystemUser $repo.CheckoutDir}}
+  <div class="flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 p-2">
+    <code class="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-xs text-zinc-700">{{$pull}}</code>
+    <button type="button" class="opp-btn shrink-0" data-copy="{{$pull}}" onclick="navigator.clipboard.writeText(this.dataset.copy);this.textContent='Copied ✓';setTimeout(()=>{this.textContent='Copy'},1500)">Copy</button>
+  </div>
+  {{if ne $repo.AuthMode "https_public"}}
+  <p class="mt-2 text-xs text-amber-600">This is a private repo — its deploy key isn't loaded in a plain shell, so a terminal pull won't authenticate. Use <strong>Redeploy</strong> above instead.</p>
+  {{else}}
+  <p class="mt-2 text-xs text-zinc-400">Or use <strong>Redeploy</strong> above, which pulls as this user with the right keys.</p>
+  {{end}}
+</div>
+{{end}}
 {{end}}
 {{end}}
 
@@ -263,6 +293,7 @@
       {{if $busy}}<span class="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">{{if eq $r.LastStatus "cloning"}}cloning…{{else}}deploying…{{end}}</span>
       {{else if eq $r.LastStatus "ok"}}<span class="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700">deployed{{if $r.LastCommit}} {{$r.LastCommit}}{{end}}</span>
       {{else if eq $r.LastStatus "error"}}<span class="rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-700">failed</span>{{end}}
+      {{if and (not $busy) $r.LastDeployAt.Valid}}<span class="text-xs text-zinc-400">{{since $r.LastDeployAt.Int64}}</span>{{end}}
     </div>
     {{if $r.LastError}}<p class="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{{$r.LastError}}</p>{{end}}
     {{if $r.DetectNote}}<p class="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">{{$r.DetectNote}}</p>{{end}}

@@ -93,6 +93,26 @@ var funcMap = template.FuncMap{
 		}
 		return template.CSS(fmt.Sprintf("width:%.1f%%", pct))
 	},
+	// since renders a coarse "time ago" for a Unix-seconds timestamp (0 = "").
+	"since": since,
+}
+
+// since formats a Unix-seconds timestamp as a coarse relative time.
+func since(unix int64) string {
+	if unix <= 0 {
+		return ""
+	}
+	d := time.Since(time.Unix(unix, 0))
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
 }
 
 func newRenderer() (*renderer, error) {

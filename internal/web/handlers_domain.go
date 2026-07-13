@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/openpropanel/openpropanel/internal/auth"
+	"github.com/openpropanel/openpropanel/internal/deploy"
 	"github.com/openpropanel/openpropanel/internal/php"
 	"github.com/openpropanel/openpropanel/internal/store"
 )
@@ -48,6 +49,9 @@ type domainVM struct {
 	AppActive  bool       // managed app unit is running
 	AppEnabled bool       // managed app unit is enabled at boot
 	Runtimes   []string   // runtime labels for the app form
+
+	SystemUser string             // the site's tenant OS user (for the terminal hint)
+	Head       *deploy.CommitInfo // last-deployed commit, or nil
 }
 
 // projectsFor loads the caller's sites and groups them into project rows
@@ -142,14 +146,21 @@ func (s *Server) getDomain(w http.ResponseWriter, r *http.Request) {
 		subs, _ = s.store.ListSubdomains(site.ID)
 	}
 	ownerName := viewer.Username
-	if viewer.Role == store.RoleAdmin {
-		if owner, err := s.store.UserByID(site.UserID); err == nil {
+	var systemUser string
+	if owner, err := s.store.UserByID(site.UserID); err == nil {
+		systemUser = owner.SystemUser
+		if viewer.Role == store.RoleAdmin {
 			ownerName = owner.Username
 		}
 	}
 	tab := r.URL.Query().Get("tab")
 	if tab != "deployment" && tab != "ssl" {
 		tab = "overview"
+	}
+	// The last-deployed commit (best-effort, tenant git) for the Deployment tab.
+	var head *deploy.CommitInfo
+	if tab == "deployment" && isMain && repo != nil {
+		head = s.domains.RepoHead(r.Context(), project.ID)
 	}
 	// Reverse-proxy app (if any) + its live unit status.
 	app := s.domains.AppFor(site.ID)
@@ -166,6 +177,7 @@ func (s *Server) getDomain(w http.ResponseWriter, r *http.Request) {
 			Host: r.Host, IsAdmin: viewer.Role == store.RoleAdmin, ActiveTab: tab,
 			Detail:   "/domains/" + strconv.FormatInt(site.ID, 10),
 			App:      app, AppActive: appActive, AppEnabled: appEnabled, Runtimes: appRuntimes(),
+			SystemUser: systemUser, Head: head,
 		},
 	})
 }

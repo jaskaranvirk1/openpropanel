@@ -403,6 +403,29 @@ func (s *Service) MapSite(ctx context.Context, siteID int64, subdir, mode string
 	return s.web().Apply(ctx)
 }
 
+// RepoHead returns the checked-out HEAD commit's details for a project's repo,
+// or nil if there is no repo or it can't be read. Best-effort — it runs git as
+// the tenant and never blocks the page on failure.
+func (s *Service) RepoHead(ctx context.Context, projectSiteID int64) *deploy.CommitInfo {
+	repo, err := s.store.RepoByProject(projectSiteID)
+	if err != nil {
+		return nil
+	}
+	site, err := s.store.SiteByID(projectSiteID)
+	if err != nil {
+		return nil
+	}
+	uid, gid, err := s.tenantIDs(site.UserID)
+	if err != nil {
+		return nil
+	}
+	info, err := s.deploy.HeadInfo(ctx, repo, uid, gid)
+	if err != nil {
+		return nil
+	}
+	return info
+}
+
 // RepoTree lists the immediate subdirectories of rel inside a project's repo
 // checkout (for the folder picker), hiding VCS/build noise.
 func (s *Service) RepoTree(repoID int64, rel string) ([]string, error) {
