@@ -2,12 +2,15 @@
  * file API. Works over one of two scopes: a single site's document root, or
  * (admins only) the whole server filesystem.
  *
- * Interaction model (deliberately simple and smooth):
- *   • single click on an item  → OPEN (folder navigates, file opens/downloads)
- *   • click a checkbox / Ctrl+click / Shift+click → SELECT (for bulk actions)
+ * Interaction model (desktop file-manager style):
+ *   • single click on an item  → SELECT it (and show its details panel)
+ *   • double click             → OPEN (folder navigates, file opens/downloads)
+ *   • checkbox / Ctrl+click / Shift+click → multi-SELECT (for bulk actions)
+ *   • click empty space        → clear the selection
  *   • right click → context menu
- * Selection only ever repaints element classes — it never rebuilds the DOM —
- * so clicks and double-clicks stay responsive and nothing shifts.
+ * A single selection shows a details panel (size/perms/owner/…); two or more
+ * show the bulk-action bar. Selection only ever repaints element classes — it
+ * never rebuilds the DOM — so clicks and double-clicks stay responsive.
  *
  * SECURITY: file/folder names reach the DOM via textContent ONLY. innerHTML is
  * used exclusively for the constant SVG icon strings below. Keep it that way. */
@@ -70,11 +73,12 @@
   // ---- server calls ------------------------------------------------------
   function load(path) {
     state.loading = true; state.path = path; clearSel();
-    // Hide the floating action bar the instant navigation starts: it lives on
-    // document.body (render() doesn't touch it) and its button closures capture
-    // the OLD selection — leaving it clickable during the fetch could act on the
-    // wrong directory.
+    // Hide the floating panels the instant navigation starts: they live on
+    // document.body (render() doesn't touch them) and their button closures
+    // capture the OLD selection — leaving them clickable during the fetch could
+    // act on the wrong directory.
     if (actionBar) actionBar.style.display = 'none';
+    if (detailsBar) detailsBar.style.display = 'none';
     if (els.list) els.list.textContent = '';
     render();
     fetch('/files/api/list?' + scopeQS() + '&path=' + encodeURIComponent(path), { headers: { 'X-OPP-Ajax': '1' } })
@@ -186,11 +190,16 @@
     state.sel = {};
     for (var i = lo; i <= hi; i++) state.sel[vis[i]] = true;
   }
-  // A click on the item body: modifier = select, plain = OPEN.
+  // A single click selects (and shows details); modifiers multi-select. Opening
+  // is on double click (onItemOpen).
   function onItemClick(e, ev) {
     if (ev.shiftKey) { selectRange(e.name); paintSelection(); return; }
     if (ev.ctrlKey || ev.metaKey) { toggle(e.name); paintSelection(); return; }
-    openEntry(e);
+    state.sel = {}; state.sel[e.name] = true; state.anchor = e.name; paintSelection();
+  }
+  function entryByName(name) {
+    for (var i = 0; i < state.entries.length; i++) if (state.entries[i].name === name) return state.entries[i];
+    return null;
   }
   function onItemContext(e, ev) {
     ev.preventDefault(); ev.stopPropagation();
@@ -427,6 +436,8 @@
     var header = el('div', { class: 'sticky top-0 z-20 -mx-1 mb-3 border-b border-zinc-200 bg-zinc-50/95 px-1 pb-3 pt-1 backdrop-blur' }, titleRow, toolbar);
 
     var list = el('div', { id: 'opp-fm-list' });
+    // A plain click on empty space (not an item) clears the selection.
+    list.addEventListener('click', function (ev) { if (ev.target === list || ev.target.id === 'opp-fm-inner') { if (selList().length) { clearSel(); paintSelection(); } } });
     list.addEventListener('contextmenu', function (ev) { if (ev.target === list || ev.target.id === 'opp-fm-inner') { ev.preventDefault(); clearSel(); paintSelection(); emptyMenu(ev.clientX, ev.clientY); } });
     list.addEventListener('dragover', function (ev) { ev.preventDefault(); list.classList.add('opp-fm-drop'); });
     list.addEventListener('dragleave', function (ev) { if (ev.target === list) list.classList.remove('opp-fm-drop'); });
@@ -473,9 +484,10 @@
     cb.addEventListener('click', function (ev) { ev.stopPropagation(); });
     cb.addEventListener('change', function () { toggle(e.name); paintSelection(); });
     var t = el('div', {
-      class: 'opp-fm-item group relative flex cursor-pointer flex-col items-center gap-1 rounded-xl p-2.5 text-center hover:bg-zinc-50',
+      class: 'opp-fm-item group relative flex cursor-pointer select-none flex-col items-center gap-1 rounded-xl p-2.5 text-center hover:bg-zinc-50',
       title: e.name,
       onclick: function (ev) { if (ev.target === cb) return; onItemClick(e, ev); },
+      ondblclick: function (ev) { if (ev.target === cb) return; openEntry(e); },
       oncontextmenu: function (ev) { onItemContext(e, ev); }
     },
       cb,
@@ -513,10 +525,11 @@
     var cb = el('input', { type: 'checkbox', class: 'h-4 w-4' });
     cb.addEventListener('click', function (ev) { ev.stopPropagation(); });
     cb.addEventListener('change', function () { toggle(e.name); paintSelection(); });
-    var name = el('button', { class: 'truncate text-left text-zinc-800 hover:text-blue-600 hover:underline', text: e.name, onclick: function (ev) { ev.stopPropagation(); if (ev.shiftKey || ev.ctrlKey || ev.metaKey) onItemClick(e, ev); else openEntry(e); } });
+    var name = el('span', { class: 'truncate text-left text-zinc-800', text: e.name });
     var row = el('div', {
-      class: 'opp-fm-item grid cursor-default ' + GRID_COLS + ' items-center gap-3 px-4 py-2.5 text-sm hover:bg-zinc-50',
-      onclick: function (ev) { if (ev.target === cb || ev.target === name) return; onItemClick(e, ev); },
+      class: 'opp-fm-item grid cursor-pointer select-none ' + GRID_COLS + ' items-center gap-3 px-4 py-2.5 text-sm hover:bg-zinc-50',
+      onclick: function (ev) { if (ev.target === cb) return; onItemClick(e, ev); },
+      ondblclick: function (ev) { if (ev.target === cb) return; openEntry(e); },
       oncontextmenu: function (ev) { onItemContext(e, ev); }
     },
       cb,
@@ -530,8 +543,8 @@
     return row;
   }
 
-  // ---- selection painting + floating action bar --------------------------
-  var actionBar;
+  // ---- selection painting + floating panels ------------------------------
+  var actionBar, detailsBar;
   function paintSelection() {
     var sel = selList();
     state.rendered.forEach(function (r) {
@@ -548,9 +561,14 @@
     });
     if (state.headCb) { var vis = visibleEntries(); state.headCb.checked = vis.length > 0 && vis.every(function (e) { return state.sel[e.name]; }); }
     updateStatus();
-    // Floating bar — fixed, so it never shifts the page layout.
+    // Exactly one selected → details panel; two or more → bulk-action bar; none
+    // → neither. The two panels are mutually exclusive (both fixed at bottom).
+    if (sel.length === 1) { hideActionBar(); showDetails(entryByName(sel[0])); }
+    else if (sel.length >= 2) { hideDetails(); showActionBar(sel); }
+    else { hideActionBar(); hideDetails(); }
+  }
+  function showActionBar(sel) {
     if (!actionBar) { actionBar = el('div', { class: 'opp-fm-actionbar' }); document.body.append(actionBar); }
-    if (!sel.length) { actionBar.style.display = 'none'; return; }
     actionBar.style.display = '';
     actionBar.textContent = '';
     actionBar.append(
@@ -560,6 +578,57 @@
       el('button', { class: 'opp-fm-abtn', onclick: function () { doZip(sel); }, text: 'Zip' }),
       el('button', { class: 'opp-fm-abtn opp-fm-abtn-danger', onclick: function () { doDelete(sel); }, text: 'Delete' }),
       el('button', { class: 'opp-fm-abtn', onclick: function () { clearSel(); paintSelection(); }, text: 'Clear' }));
+  }
+  function hideActionBar() { if (actionBar) actionBar.style.display = 'none'; }
+  function hideDetails() { if (detailsBar) detailsBar.style.display = 'none'; }
+
+  // ---- details panel (single selection) ----------------------------------
+  function typeLabel(e) {
+    if (e.dir) return 'Folder';
+    if (e.link) return 'Symbolic link';
+    var x = extOf(e.name);
+    return x ? x.toUpperCase() + ' file' : 'File';
+  }
+  function prop(label, value, mono) {
+    return el('div', { class: 'min-w-0' },
+      el('div', { class: 'text-[10px] font-semibold uppercase tracking-wide text-zinc-400', text: label }),
+      el('div', { class: 'truncate text-sm ' + (mono ? 'font-mono ' : '') + 'text-zinc-700', title: value, text: value }));
+  }
+  function showDetails(e) {
+    if (!e) { hideDetails(); return; }
+    if (!detailsBar) { detailsBar = el('div', { class: 'opp-fm-details' }); document.body.append(detailsBar); }
+    detailsBar.style.display = '';
+    detailsBar.textContent = '';
+
+    var perms = (e.sym || '') + (e.perm ? '  ' + ('0' + e.perm).slice(-4) : '');
+    var when = e.mtime ? ago(e.mtime) : '—';
+
+    // Header: icon + name + type, with a close button.
+    var head = el('div', { class: 'flex items-start gap-3' },
+      el('div', { class: 'h-9 w-9 flex-none ' + (e.dir ? 'text-blue-500' : (e.link ? 'text-teal-500' : 'text-zinc-400')), html: iconFor(e) }),
+      el('div', { class: 'min-w-0 flex-1' },
+        el('div', { class: 'truncate text-sm font-semibold text-zinc-900', title: e.name, text: e.name }),
+        el('div', { class: 'text-xs text-zinc-400', text: typeLabel(e) + (e.dir || e.link ? '' : ' · ' + hsize(e.size)) })),
+      el('button', { class: 'flex-none text-zinc-400 hover:text-zinc-700', title: 'Close', onclick: function () { clearSel(); paintSelection(); }, html: '<svg viewBox="0 0 20 20" class="h-5 w-5"><path d="M6 6l8 8M14 6l-8 8" stroke="currentColor" stroke-width="2"/></svg>' }));
+
+    // Properties grid.
+    var props = el('div', { class: 'mt-3 grid grid-cols-2 gap-x-4 gap-y-2.5 sm:grid-cols-4' },
+      prop('Size', e.dir ? '—' : hsize(e.size)),
+      prop('Modified', when, false),
+      prop('Owner', (e.owner || '—') + ':' + (e.group || '—')),
+      prop('Permissions', perms || '—', true),
+      prop('Location', '/' + join(state.path, e.name), true));
+
+    // Actions row (single-item subset of the context menu).
+    var actions = el('div', { class: 'mt-3.5 flex flex-wrap gap-1.5 border-t border-zinc-100 pt-3' });
+    actions.append(el('button', { class: 'opp-btn', onclick: function () { openEntry(e); }, text: e.dir ? 'Open' : (isEditable(e) ? 'Open / edit' : 'Open') }));
+    if (!e.dir) actions.append(el('button', { class: 'opp-btn', onclick: function () { download(e.name); }, text: 'Download' }));
+    if (extOf(e.name) === 'zip') actions.append(el('button', { class: 'opp-btn', onclick: function () { doExtract(e.name); }, text: 'Extract' }));
+    actions.append(el('button', { class: 'opp-btn', onclick: function () { doRename(e.name); }, text: 'Rename' }));
+    actions.append(el('button', { class: 'opp-btn', onclick: function () { permModal(e); }, text: 'Permissions' }));
+    actions.append(el('button', { class: 'opp-btn opp-fm-abtn-danger', onclick: function () { doDelete([e.name]); }, text: 'Delete' }));
+
+    detailsBar.append(head, props, actions);
   }
   function updateStatus() {
     if (!els.status) return;
