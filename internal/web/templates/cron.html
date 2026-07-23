@@ -1,0 +1,85 @@
+{{define "title"}}Cron Jobs · Open ProPanel{{end}}
+
+{{define "content"}}
+<div class="mb-6">
+  <h1 class="text-2xl font-semibold tracking-tight text-zinc-900">Cron Jobs</h1>
+  <p class="text-sm text-zinc-500">Run a command on a schedule. Jobs run as your account's system user.</p>
+</div>
+
+{{/* Add a cron job */}}
+<div class="opp-card mb-6 p-5">
+  <h2 class="mb-4 text-sm font-semibold text-zinc-900">Add a cron job</h2>
+  <form method="post" action="/cron" class="space-y-4">
+    <div class="flex flex-wrap items-end gap-3">
+      <div class="min-w-[200px] flex-1">
+        <label class="opp-lbl">Common settings</label>
+        <select id="cron-preset" class="opp-select">
+          <option value="">Choose a schedule…</option>
+          {{range .Data.Presets}}
+          <option value="{{.Minute}}|{{.Hour}}|{{.Dom}}|{{.Month}}|{{.Dow}}">{{.Label}}</option>
+          {{end}}
+        </select>
+      </div>
+      {{if .Data.IsAdmin}}
+      <div>
+        <label class="opp-lbl">Owner</label>
+        <select name="owner_id" class="opp-select">
+          {{range .Data.Users}}<option value="{{.ID}}" {{if eq .ID $.Data.CurrentUID}}selected{{end}}>{{.Username}}</option>{{end}}
+        </select>
+      </div>
+      {{end}}
+    </div>
+
+    <div class="grid grid-cols-2 gap-3 sm:grid-cols-5">
+      <div><label class="opp-lbl">Minute</label><input id="cf-minute" name="minute" value="*" required class="opp-input text-center font-mono"></div>
+      <div><label class="opp-lbl">Hour</label><input id="cf-hour" name="hour" value="*" required class="opp-input text-center font-mono"></div>
+      <div><label class="opp-lbl">Day</label><input id="cf-dom" name="dom" value="*" required class="opp-input text-center font-mono"></div>
+      <div><label class="opp-lbl">Month</label><input id="cf-month" name="month" value="*" required class="opp-input text-center font-mono"></div>
+      <div><label class="opp-lbl">Weekday</label><input id="cf-dow" name="dow" value="*" required class="opp-input text-center font-mono"></div>
+    </div>
+
+    <div>
+      <label class="opp-lbl">Command</label>
+      <input name="command" required placeholder="/usr/bin/php /var/www/example.com/public_html/cron.php" class="opp-input font-mono text-xs">
+      <p class="mt-1 text-[11px] text-zinc-400">Use full paths. Redirect output if you don't want cron emails, e.g. <span class="font-mono">… &gt;/dev/null 2&gt;&amp;1</span>. Cron syntax: <span class="font-mono">*</span> any · <span class="font-mono">*/5</span> every 5 · <span class="font-mono">0-30</span> range · <span class="font-mono">1,15</span> list.</p>
+    </div>
+    <button class="opp-btn-primary">Add cron job</button>
+  </form>
+</div>
+
+{{/* Current cron jobs */}}
+<div class="opp-card overflow-hidden">
+  <div class="border-b border-zinc-200 px-5 py-4">
+    <h2 class="text-sm font-semibold text-zinc-900">Current cron jobs</h2>
+  </div>
+  {{if .Data.Rows}}
+  <div class="divide-y divide-zinc-100">
+    {{range .Data.Rows}}
+    <div class="flex flex-wrap items-center gap-3 px-5 py-3.5 hover:bg-zinc-50">
+      <span class="w-full shrink-0 font-mono text-xs text-zinc-500 sm:w-40">{{.Job.Minute}} {{.Job.Hour}} {{.Job.Dom}} {{.Job.Month}} {{.Job.Dow}}</span>
+      <span class="min-w-0 flex-1 truncate font-mono text-sm text-zinc-800" title="{{.Job.Command}}">{{.Job.Command}}</span>
+      {{if $.Data.IsAdmin}}<span class="text-xs text-zinc-400">{{.OwnerName}}</span>{{end}}
+      <form method="post" action="/cron/{{.Job.ID}}/delete" onsubmit="return confirm('Delete this cron job?')">
+        <button class="opp-btn-danger">Delete</button>
+      </form>
+    </div>
+    {{end}}
+  </div>
+  {{else}}
+  <p class="px-5 py-10 text-center text-sm text-zinc-400">No cron jobs yet. Add one above.</p>
+  {{end}}
+</div>
+
+<script>
+(function () {
+  var sel = document.getElementById('cron-preset');
+  if (!sel) return;
+  var ids = ['cf-minute', 'cf-hour', 'cf-dom', 'cf-month', 'cf-dow'];
+  sel.addEventListener('change', function () {
+    if (!sel.value) return;
+    var parts = sel.value.split('|');
+    ids.forEach(function (id, i) { var el = document.getElementById(id); if (el) el.value = parts[i]; });
+  });
+})();
+</script>
+{{end}}

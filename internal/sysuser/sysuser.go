@@ -82,6 +82,10 @@ func (m *Manager) Remove(ctx context.Context, name string) error {
 	if name == "" || reserved[name] || !m.Exists(name) || m.cfg.Dev {
 		return nil
 	}
+	// Remove the user's crontab first: userdel leaves it in /var/spool/cron, and a
+	// leftover could later apply to a re-created user of the same name. Best-effort
+	// — a user with no crontab makes this exit non-zero, which is fine.
+	_, _ = system.Run(ctx, "crontab", "-r", "-u", name)
 	if _, err := system.Run(ctx, "userdel", name); err != nil {
 		return fmt.Errorf("delete system user %q: %w", name, err)
 	}

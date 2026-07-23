@@ -14,6 +14,7 @@ import (
 
 	"github.com/openpropanel/openpropanel/internal/auth"
 	"github.com/openpropanel/openpropanel/internal/config"
+	"github.com/openpropanel/openpropanel/internal/cron"
 	"github.com/openpropanel/openpropanel/internal/domains"
 	"github.com/openpropanel/openpropanel/internal/mariadb"
 	"github.com/openpropanel/openpropanel/internal/php"
@@ -32,6 +33,7 @@ type Server struct {
 	sysuser *sysuser.Manager
 	mariadb *mariadb.Manager
 	pma     *phpmyadmin.Manager
+	cron    *cron.Manager
 	render   *renderer
 	cfgPath  string
 	login    *loginLimiter
@@ -52,7 +54,7 @@ func New(cfg *config.Config, s *store.Store, a *auth.Manager, d *domains.Service
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, store: s, auth: a, domains: d, php: p, sysuser: su, mariadb: mdb, pma: pma, render: r, cfgPath: cfgPath,
+	return &Server{cfg: cfg, store: s, auth: a, domains: d, php: p, sysuser: su, mariadb: mdb, pma: pma, cron: cron.New(cfg), render: r, cfgPath: cfgPath,
 		login: newLoginLimiter(), pmaLogin: newLoginLimiter(), hookLimit: newLoginLimiter(), hookSeen: newDeliveryCache(512)}, nil
 }
 
@@ -125,6 +127,10 @@ func (s *Server) Handler() http.Handler {
 	// pattern takes precedence over the /phpmyadmin/ subtree.
 	app.Handle("POST /phpmyadmin/install", auth.RequireAdmin(http.HandlerFunc(s.postInstallPMA)))
 	app.HandleFunc("/phpmyadmin/", s.servePMA)
+
+	app.HandleFunc("GET /cron", s.getCron)
+	app.HandleFunc("POST /cron", s.postCreateCron)
+	app.HandleFunc("POST /cron/{id}/delete", s.postDeleteCron)
 
 	app.HandleFunc("GET /files", s.getFiles)
 	app.HandleFunc("GET /files/api/list", s.getFilesList)

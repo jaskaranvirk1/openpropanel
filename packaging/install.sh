@@ -38,7 +38,7 @@ done
 log "Checking runtime dependencies (installing only what is missing)"
 # MariaDB installed by default (Databases + phpMyAdmin); PROPANEL_NO_DB=1 to skip.
 # git + openssh-clients power "Deploy from GitHub" (clone/fetch as the tenant).
-REQUIRED="httpd mod_ssl php-fpm certbot firewalld git openssh-clients"
+REQUIRED="httpd mod_ssl php-fpm certbot firewalld git openssh-clients cronie"
 [ "${PROPANEL_NO_DB:-0}" = "1" ] || REQUIRED="$REQUIRED mariadb-server"
 missing=""
 for pkg in $REQUIRED; do
@@ -69,6 +69,7 @@ if command -v httpd >/dev/null 2>&1; then
     done
 fi
 systemctl enable --now firewalld || warn "firewalld not available; skipping firewall config"
+systemctl enable --now crond    || warn "crond not available; Cron Jobs will not run until it is started"
 if [ "${PROPANEL_NO_DB:-0}" != "1" ]; then
     systemctl enable --now mariadb || warn "MariaDB installed but not started — check: systemctl status mariadb"
 fi

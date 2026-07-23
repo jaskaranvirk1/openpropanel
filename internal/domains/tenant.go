@@ -2,6 +2,7 @@ package domains
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -47,6 +48,20 @@ func deriveSystemUser(base string, taken func(string) bool) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("could not find a free system user name for %q", base)
+}
+
+// EnsureTenantUser guarantees an account has a Linux system user (JIT-provisioning
+// one if missing) and returns its name. Used by tools that run work as the tenant
+// (e.g. cron jobs) so "this account has no system user" is never a dead end.
+func (s *Service) EnsureTenantUser(ctx context.Context, userID int64) (string, error) {
+	owner, err := s.store.UserByID(userID)
+	if err != nil {
+		return "", errors.New("account not found")
+	}
+	if _, err := s.ensureTenant(ctx, owner); err != nil {
+		return "", err
+	}
+	return owner.SystemUser, nil
 }
 
 // ensureTenant guarantees the owner account has a Linux system user, creating

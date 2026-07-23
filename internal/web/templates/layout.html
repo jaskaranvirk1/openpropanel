@@ -22,7 +22,7 @@
     <nav class="flex-1 space-y-1 px-3 py-2">
       <a href="/dashboard" class="{{navClass .Active "dashboard"}}">
         <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h3A2.25 2.25 0 0 1 11.25 6v3A2.25 2.25 0 0 1 9 11.25H6A2.25 2.25 0 0 1 3.75 9V6Zm9 0A2.25 2.25 0 0 1 15 3.75h3A2.25 2.25 0 0 1 20.25 6v3A2.25 2.25 0 0 1 18 11.25h-3A2.25 2.25 0 0 1 12.75 9V6Zm-9 9A2.25 2.25 0 0 1 6 12.75h3A2.25 2.25 0 0 1 11.25 15v3A2.25 2.25 0 0 1 9 20.25H6A2.25 2.25 0 0 1 3.75 18v-3Zm9 0A2.25 2.25 0 0 1 15 12.75h3A2.25 2.25 0 0 1 20.25 15v3A2.25 2.25 0 0 1 18 20.25h-3A2.25 2.25 0 0 1 12.75 18v-3Z"/></svg>
-        Dashboard
+        Home
       </a>
       <a href="/domains" class="{{navClass .Active "domains"}}">
         <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0 0c2.5 0 4.5-4 4.5-9S14.5 3 12 3 7.5 7 7.5 12s2 9 4.5 9ZM3.5 9h17M3.5 15h17"/></svg>
@@ -35,6 +35,10 @@
       <a href="/files" class="{{navClass .Active "files"}}">
         <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h3.88a1.5 1.5 0 0 1 1.06.44l1.12 1.12a1.5 1.5 0 0 0 1.06.44H18A2.25 2.25 0 0 1 20.25 8v9.75A2.25 2.25 0 0 1 18 20H6a2.25 2.25 0 0 1-2.25-2.25V6Z"/></svg>
         Files
+      </a>
+      <a href="/cron" class="{{navClass .Active "cron"}}">
+        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.25"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 7.5V12l3 2"/></svg>
+        Cron Jobs
       </a>
       {{if eq .User.Role "admin"}}
       <a href="/users" class="{{navClass .Active "users"}}">
@@ -72,10 +76,11 @@
       <form method="post" action="/logout" class="shrink-0"><button class="text-sm text-zinc-500">Sign out</button></form>
     </header>
     <nav class="flex gap-1 overflow-x-auto border-b border-zinc-200 bg-white px-3 py-2 md:hidden [&>a]:shrink-0 [&>a]:whitespace-nowrap [&>a]:py-2.5">
-      <a href="/dashboard" class="{{navClass .Active "dashboard"}}">Dashboard</a>
+      <a href="/dashboard" class="{{navClass .Active "dashboard"}}">Home</a>
       <a href="/domains" class="{{navClass .Active "domains"}}">Domains</a>
       <a href="/databases" class="{{navClass .Active "databases"}}">Databases</a>
       <a href="/files" class="{{navClass .Active "files"}}">Files</a>
+      <a href="/cron" class="{{navClass .Active "cron"}}">Cron Jobs</a>
       {{if eq .User.Role "admin"}}
       <a href="/users" class="{{navClass .Active "users"}}">Users</a>
       <a href="/settings" class="{{navClass .Active "settings"}}">Settings</a>

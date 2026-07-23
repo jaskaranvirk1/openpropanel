@@ -217,6 +217,18 @@ CREATE TABLE IF NOT EXISTS apps (
     created_at    INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS cron_jobs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    minute     TEXT NOT NULL DEFAULT '*',
+    hour       TEXT NOT NULL DEFAULT '*',
+    dom        TEXT NOT NULL DEFAULT '*',
+    month      TEXT NOT NULL DEFAULT '*',
+    dow        TEXT NOT NULL DEFAULT '*',
+    command    TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
     token      TEXT PRIMARY KEY,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -809,6 +821,87 @@ func (s *Store) ListManagedApps() ([]*App, error) {
 			return nil, err
 		}
 		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// CronJob is one scheduled command owned by an account; it runs as that account's
+// Linux system user via the user's crontab.
+type CronJob struct {
+	ID                             int64
+	UserID                         int64
+	Minute, Hour, Dom, Month, Dow  string
+	Command                        string
+	CreatedAt                      time.Time
+}
+
+func scanCronJob(row interface{ Scan(...any) error }) (*CronJob, error) {
+	var c CronJob
+	var created int64
+	err := row.Scan(&c.ID, &c.UserID, &c.Minute, &c.Hour, &c.Dom, &c.Month, &c.Dow, &c.Command, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	c.CreatedAt = time.Unix(created, 0)
+	return &c, nil
+}
+
+const cronCols = `id, user_id, minute, hour, dom, month, dow, command, created_at`
+
+// CreateCronJob inserts a scheduled job for an account.
+func (s *Store) CreateCronJob(c *CronJob) (*CronJob, error) {
+	now := time.Now()
+	res, err := s.db.Exec(
+		`INSERT INTO cron_jobs (user_id, minute, hour, dom, month, dow, command, created_at) VALUES (?,?,?,?,?,?,?,?)`,
+		c.UserID, c.Minute, c.Hour, c.Dom, c.Month, c.Dow, c.Command, now.Unix())
+	if err != nil {
+		return nil, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	c.ID, c.CreatedAt = id, now
+	return c, nil
+}
+
+// CronJobByID looks up one job.
+func (s *Store) CronJobByID(id int64) (*CronJob, error) {
+	return scanCronJob(s.db.QueryRow(`SELECT `+cronCols+` FROM cron_jobs WHERE id = ?`, id))
+}
+
+// DeleteCronJob removes a job.
+func (s *Store) DeleteCronJob(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM cron_jobs WHERE id = ?`, id)
+	return err
+}
+
+// ListCronJobsByUser returns an account's jobs, newest first.
+func (s *Store) ListCronJobsByUser(userID int64) ([]*CronJob, error) {
+	return s.cronQuery(`SELECT `+cronCols+` FROM cron_jobs WHERE user_id = ? ORDER BY id DESC`, userID)
+}
+
+// ListCronJobsAll returns every job (admin view / crontab reconciliation).
+func (s *Store) ListCronJobsAll() ([]*CronJob, error) {
+	return s.cronQuery(`SELECT ` + cronCols + ` FROM cron_jobs ORDER BY user_id, id`)
+}
+
+func (s *Store) cronQuery(q string, args ...any) ([]*CronJob, error) {
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*CronJob
+	for rows.Next() {
+		c, err := scanCronJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
 	}
 	return out, rows.Err()
 }

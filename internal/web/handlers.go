@@ -145,12 +145,16 @@ func (s *Server) dashboardData(ctx context.Context, isAdmin bool) dashboardVM {
 
 func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
 	u := auth.UserFrom(r.Context())
+	isAdmin := u.Role == store.RoleAdmin
 	s.render.page(w, http.StatusOK, "dashboard", pageData{
 		User:   u,
 		Active: "dashboard",
 		Flash:  r.URL.Query().Get("msg"),
 		Error:  r.URL.Query().Get("err"),
-		Data:   s.dashboardData(r.Context(), u.Role == store.RoleAdmin),
+		Data: homeVM{
+			Categories: homeCategories(isAdmin),
+			Live:       s.dashboardData(r.Context(), isAdmin),
+		},
 	})
 }
 
