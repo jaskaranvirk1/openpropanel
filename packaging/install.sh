@@ -38,7 +38,9 @@ done
 log "Checking runtime dependencies (installing only what is missing)"
 # MariaDB installed by default (Databases + phpMyAdmin); PROPANEL_NO_DB=1 to skip.
 # git + openssh-clients power "Deploy from GitHub" (clone/fetch as the tenant).
-REQUIRED="httpd mod_ssl php-fpm certbot firewalld git openssh-clients cronie"
+# nodejs (with npm) + php-cli power the "deploy from GitHub" build step
+# (npm ci && npm run build for Angular/React/Vite; composer install for Laravel).
+REQUIRED="httpd mod_ssl php-fpm php-cli certbot firewalld git openssh-clients cronie nodejs"
 [ "${PROPANEL_NO_DB:-0}" = "1" ] || REQUIRED="$REQUIRED mariadb-server"
 missing=""
 for pkg in $REQUIRED; do
@@ -70,6 +72,13 @@ if command -v httpd >/dev/null 2>&1; then
 fi
 systemctl enable --now firewalld || warn "firewalld not available; skipping firewall config"
 systemctl enable --now crond    || warn "crond not available; Cron Jobs will not run until it is started"
+
+# Composer isn't reliably packaged on RHEL/AlmaLinux; best-effort install, else
+# warn. Laravel deploys (composer install) surface the same guidance on failure.
+if ! command -v composer >/dev/null 2>&1; then
+    dnf install -y composer >/dev/null 2>&1 || true
+    command -v composer >/dev/null 2>&1 || warn "Composer not installed — Laravel/PHP builds need it. Install from https://getcomposer.org, then it works with no further config."
+fi
 if [ "${PROPANEL_NO_DB:-0}" != "1" ]; then
     systemctl enable --now mariadb || warn "MariaDB installed but not started — check: systemctl status mariadb"
 fi

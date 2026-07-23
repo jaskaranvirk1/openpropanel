@@ -27,6 +27,62 @@ func checkout(t *testing.T, files ...string) string {
 	return dir
 }
 
+// checkoutC builds a temp dir with the given path→content files.
+func checkoutC(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for f, content := range files {
+		p := filepath.Join(dir, filepath.FromSlash(f))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func TestDetectFolderBuilds(t *testing.T) {
+	cases := []struct {
+		name          string
+		files         map[string]string
+		mode, publish string
+		hasBuild      bool
+	}{
+		{"angular", map[string]string{"angular.json": `{"projects":{"app":{"architect":{"build":{"options":{"outputPath":"dist/app"}}}}}}`, "package.json": `{"dependencies":{"@angular/core":"17"}}`}, store.WebModeSPA, "dist/app", true},
+		{"react-cra", map[string]string{"package.json": `{"dependencies":{"react-scripts":"5"}}`}, store.WebModeSPA, "build", true},
+		{"vite", map[string]string{"package.json": `{"devDependencies":{"vite":"5"}}`}, store.WebModeSPA, "dist", true},
+		{"laravel", map[string]string{"composer.json": `{"require":{"laravel/framework":"11"}}`, "artisan": "#!/usr/bin/env php"}, store.WebModePHP, "public", true},
+		{"committed-dist", map[string]string{"dist/index.html": "<html>"}, store.WebModeSPA, "dist", false},
+		{"static", map[string]string{"index.html": "<html>"}, store.WebModeStatic, "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			mode, publish, build, _ := DetectFolder(checkoutC(t, c.files))
+			if mode != c.mode || publish != c.publish {
+				t.Errorf("DetectFolder = (mode=%q, publish=%q), want (%q, %q)", mode, publish, c.mode, c.publish)
+			}
+			if (build != "") != c.hasBuild {
+				t.Errorf("DetectFolder build=%q, wanted hasBuild=%v", build, c.hasBuild)
+			}
+		})
+	}
+	// Next.js is not auto-servable — mode empty, note guides to Run an app.
+	if mode, _, _, note := DetectFolder(checkoutC(t, map[string]string{"package.json": `{"dependencies":{"next":"14"}}`})); mode != "" || !strings.Contains(note, "Next.js") {
+		t.Errorf("Next.js should not auto-map: mode=%q note=%q", mode, note)
+	}
+}
+
+func TestClassifyBuildTools(t *testing.T) {
+	if e := Classify(errors.New("bash: line 1: npm: command not found")); !strings.Contains(e.Error(), "Node.js") {
+		t.Errorf("npm-missing not classified: %v", e)
+	}
+	if e := Classify(errors.New("bash: composer: command not found")); !strings.Contains(e.Error(), "Composer") {
+		t.Errorf("composer-missing not classified: %v", e)
+	}
+}
+
 func TestDetectApp(t *testing.T) {
 	cases := []struct {
 		name   string

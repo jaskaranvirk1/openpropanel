@@ -171,8 +171,12 @@ func TestClearRepoMapping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetSiteMapping(siteID, sql.NullInt64{Int64: repo.ID, Valid: true}, "public", "/var/www/example.com/repo/public", WebModePHP); err != nil {
+	if err := s.SetSiteMapping(siteID, sql.NullInt64{Int64: repo.ID, Valid: true}, "public", "", "composer install", "/var/www/example.com/repo/public", WebModePHP); err != nil {
 		t.Fatal(err)
+	}
+	// The mapping round-trips the new build column.
+	if site, err := s.SiteByID(siteID); err != nil || site.BuildCommand != "composer install" {
+		t.Fatalf("mapping did not persist build_command: %+v err=%v", site, err)
 	}
 	if err := s.ClearRepoMapping(repo.ID); err != nil {
 		t.Fatal(err)
@@ -181,7 +185,7 @@ func TestClearRepoMapping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if site.RepoID.Valid || site.RepoSubdir != "" {
+	if site.RepoID.Valid || site.RepoSubdir != "" || site.BuildCommand != "" || site.PublishDir != "" {
 		t.Errorf("mapping not cleared: %+v", site)
 	}
 	if site.DocRoot != "/var/www/example.com/repo/public" || site.WebMode != WebModePHP {

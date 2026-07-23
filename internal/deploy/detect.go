@@ -5,12 +5,108 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/openpropanel/openpropanel/internal/store"
 )
+
+var reAngularOut = regexp.MustCompile(`"outputPath"\s*:\s*"([^"]+)"`)
+
+// DetectBuild inspects a subfolder for a framework that must be BUILT before it
+// can be served, and suggests {mode, publishDir (output relative to the folder),
+// buildCommand}. ok=false means "no known buildable framework here" (note may
+// still carry guidance, e.g. for Next.js). It only READS manifest files; the
+// returned publishDir is a form pre-fill and is re-validated by the caller before
+// it ever reaches a doc root.
+func DetectBuild(dir string) (mode, publishDir, buildCommand, note string, ok bool) {
+	has := func(parts ...string) bool {
+		_, e := os.Stat(filepath.Join(append([]string{dir}, parts...)...))
+		return e == nil
+	}
+	read := func(name string) string {
+		f, err := os.Open(filepath.Join(dir, name))
+		if err != nil {
+			return ""
+		}
+		defer f.Close()
+		// Read at most 1 MB: a manifest is tiny, and a tenant could commit a huge
+		// (even sparse) file to OOM the root panel if we read it whole.
+		b, _ := io.ReadAll(io.LimitReader(f, 1<<20))
+		return string(b)
+	}
+	pkg := read("package.json")
+	dep := func(name string) bool {
+		return pkg != "" && regexp.MustCompile(`"`+regexp.QuoteMeta(name)+`"\s*:`).MatchString(pkg)
+	}
+	switch {
+	case has("angular.json") || dep("@angular/core"):
+		pub := "dist"
+		if a := read("angular.json"); a != "" {
+			if m := reAngularOut.FindStringSubmatch(a); m != nil {
+				pub = m[1]
+			}
+		}
+		return store.WebModeSPA, pub, "npm ci && npm run build", "Angular build. Angular 17+ nests output under /browser — verify the publish dir after the first build.", true
+	case dep("react-scripts"):
+		return store.WebModeSPA, "build", "npm ci && npm run build", "", true
+	case dep("next"):
+		return "", "", "", "Next.js needs a running Node server — use “Run an app” (reverse proxy) with a build + start command, unless next.config sets output:'export' (then serve the “out” folder).", false
+	case dep("vite") || dep("@vue/cli-service"):
+		return store.WebModeSPA, "dist", "npm ci && npm run build", "", true
+	case pkg != "" && regexp.MustCompile(`"scripts"[\s\S]*?"build"\s*:`).MatchString(pkg):
+		return store.WebModeSPA, "dist", "npm ci && npm run build", "Node build detected — check the output folder (often dist or build).", true
+	case has("composer.json") && has("artisan"):
+		return store.WebModePHP, "public", "composer install --no-dev --optimize-autoloader", "", true
+	case has("composer.json"):
+		pub := ""
+		if has("public", "index.php") {
+			pub = "public"
+		}
+		return store.WebModePHP, pub, "composer install", "", true
+	}
+	return "", "", "", "", false
+}
+
+// DetectFolder suggests how to serve a subfolder: mode + publishDir + buildCommand
+// (empty = no build). It prefers a buildable framework (DetectBuild); failing
+// that, it looks for committed output / an entrypoint. mode == "" means it could
+// not tell — the operator must choose. Used for the Browse pre-fill and one-click
+// activate.
+func DetectFolder(dir string) (mode, publishDir, buildCommand, note string) {
+	if m, pub, bc, n, ok := DetectBuild(dir); ok {
+		return m, pub, bc, n
+	} else {
+		note = n // may be Next.js guidance
+	}
+	has := func(parts ...string) bool {
+		_, e := os.Stat(filepath.Join(append([]string{dir}, parts...)...))
+		return e == nil
+	}
+	switch {
+	case has("public", "index.php"):
+		return store.WebModePHP, "public", "", ""
+	case has("index.php"):
+		return store.WebModePHP, "", "", ""
+	case has("dist", "index.html"):
+		return store.WebModeSPA, "dist", "", ""
+	case has("build", "index.html"):
+		return store.WebModeSPA, "build", "", ""
+	case has("out", "index.html"):
+		return store.WebModeStatic, "out", "", ""
+	case has("public", "index.html"):
+		return store.WebModeStatic, "public", "", ""
+	case has("index.html"):
+		return store.WebModeStatic, "", "", ""
+	}
+	if note == "" {
+		note = "Couldn't detect automatically — pick the serving mode, and if it needs building, set a build command + output folder."
+	}
+	return "", "", "", note
+}
 
 // DetectApp inspects a fresh checkout and guesses how to serve it. It returns
 // the doc-root subfolder relative to the checkout, the serving mode
@@ -76,6 +172,10 @@ func Classify(err error) error {
 	}
 	s := err.Error()
 	switch {
+	case strings.Contains(s, "npm: command not found"), strings.Contains(s, "ng: not found"), strings.Contains(s, `"npm": executable file not found`), strings.Contains(s, "node: command not found"):
+		return &UserError{Msg: "Node.js / npm is not installed on this server — run: dnf install -y nodejs — then deploy again.", Raw: err}
+	case strings.Contains(s, "composer: command not found"), strings.Contains(s, `"composer": executable file not found`):
+		return &UserError{Msg: "Composer is not installed on this server — install it (see getcomposer.org), then deploy again.", Raw: err}
 	case strings.Contains(s, "executable file not found"):
 		return &UserError{Msg: "git is not installed on this server — run: dnf install -y git — then deploy again.", Raw: err}
 	case strings.Contains(s, "Permission denied (publickey"):

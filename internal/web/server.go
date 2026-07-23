@@ -111,6 +111,8 @@ func (s *Server) Handler() http.Handler {
 	app.HandleFunc("POST /repos/{id}/branch", s.postRepoBranch)
 	app.HandleFunc("GET /repos/{id}/card", s.getRepoCard)
 	app.HandleFunc("GET /repos/{id}/tree", s.getRepoTree)
+	app.HandleFunc("GET /repos/{id}/detect", s.getRepoDetect)
+	app.HandleFunc("GET /repos/{id}/log", s.getRepoLog)
 
 	app.HandleFunc("GET /databases", s.getDatabases)
 	app.HandleFunc("POST /databases", s.postCreateDatabase)

@@ -73,9 +73,14 @@ type Site struct {
 	Source     string // SourceManaged | SourceImported
 	ConfFile   string // original config path (for imported sites)
 	RepoID     sql.NullInt64 // linked GitHub repo (project), if any
-	RepoSubdir string        // folder inside the repo checkout this doc root maps to
-	WebMode    string        // WebModePHP | WebModeStatic | WebModeSPA
-	CreatedAt  time.Time
+	RepoSubdir string        // folder inside the repo checkout = the build working dir + doc-root base
+	// BuildCommand runs in RepoSubdir on each deploy (empty = no build); PublishDir
+	// is the build output relative to RepoSubdir (empty = serve RepoSubdir itself).
+	// Served DocRoot = checkout/RepoSubdir/PublishDir.
+	BuildCommand string
+	PublishDir   string
+	WebMode      string // WebModePHP | WebModeStatic | WebModeSPA | WebModeProxy
+	CreatedAt    time.Time
 }
 
 // Repo is a GitHub repository linked to a project (its parent site), cloned once
@@ -98,6 +103,7 @@ type Repo struct {
 	LastDeployAt  sql.NullInt64
 	WebhookSecret string // HMAC key for the GitHub push webhook ("" = webhook disabled)
 	DetectNote    string // standing note from app auto-detection (e.g. "needs a build step")
+	LastLog       string // captured output of the last clone/build (for the deploy log)
 	CreatedAt     time.Time
 }
 
@@ -181,6 +187,8 @@ CREATE TABLE IF NOT EXISTS sites (
     web_mode    TEXT NOT NULL DEFAULT 'php',
     cert_file   TEXT NOT NULL DEFAULT '',
     key_file    TEXT NOT NULL DEFAULT '',
+    build_command TEXT NOT NULL DEFAULT '',
+    publish_dir   TEXT NOT NULL DEFAULT '',
     created_at  INTEGER NOT NULL
 );
 
@@ -202,6 +210,7 @@ CREATE TABLE IF NOT EXISTS repos (
     last_deploy_at  INTEGER,
     webhook_secret  TEXT NOT NULL DEFAULT '',
     detect_note     TEXT NOT NULL DEFAULT '',
+    last_log        TEXT NOT NULL DEFAULT '',
     created_at      INTEGER NOT NULL
 );
 
@@ -283,6 +292,9 @@ CREATE INDEX IF NOT EXISTS idx_dbusers_user ON db_users(user_id);
 		`ALTER TABLE sites ADD COLUMN key_file TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE repos ADD COLUMN webhook_secret TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE repos ADD COLUMN detect_note TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE repos ADD COLUMN last_log TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sites ADD COLUMN build_command TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sites ADD COLUMN publish_dir TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := s.db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
@@ -443,13 +455,13 @@ func (s *Store) CountBySystemUser(name string) (int, error) {
 // Sites
 // ---------------------------------------------------------------------------
 
-const siteCols = `id, user_id, domain, type, parent_id, doc_root, php_version, ssl_enabled, source, conf_file, repo_id, repo_subdir, web_mode, cert_file, key_file, created_at`
+const siteCols = `id, user_id, domain, type, parent_id, doc_root, php_version, ssl_enabled, source, conf_file, repo_id, repo_subdir, web_mode, cert_file, key_file, build_command, publish_dir, created_at`
 
 func scanSite(row interface{ Scan(...any) error }) (*Site, error) {
 	var st Site
 	var created int64
 	var ssl int
-	err := row.Scan(&st.ID, &st.UserID, &st.Domain, &st.Type, &st.ParentID, &st.DocRoot, &st.PHPVersion, &ssl, &st.Source, &st.ConfFile, &st.RepoID, &st.RepoSubdir, &st.WebMode, &st.CertFile, &st.KeyFile, &created)
+	err := row.Scan(&st.ID, &st.UserID, &st.Domain, &st.Type, &st.ParentID, &st.DocRoot, &st.PHPVersion, &ssl, &st.Source, &st.ConfFile, &st.RepoID, &st.RepoSubdir, &st.WebMode, &st.CertFile, &st.KeyFile, &st.BuildCommand, &st.PublishDir, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -586,10 +598,10 @@ func (s *Store) DeleteSite(id int64) error {
 
 // SetSiteMapping points a site's doc root at a subfolder of its project's repo
 // checkout and records the serving mode (php|static|spa).
-func (s *Store) SetSiteMapping(id int64, repoID sql.NullInt64, subdir, docRoot, webMode string) error {
+func (s *Store) SetSiteMapping(id int64, repoID sql.NullInt64, subdir, publishDir, buildCommand, docRoot, webMode string) error {
 	_, err := s.db.Exec(
-		`UPDATE sites SET repo_id = ?, repo_subdir = ?, doc_root = ?, web_mode = ? WHERE id = ?`,
-		repoID, subdir, docRoot, webMode, id)
+		`UPDATE sites SET repo_id = ?, repo_subdir = ?, publish_dir = ?, build_command = ?, doc_root = ?, web_mode = ? WHERE id = ?`,
+		repoID, subdir, publishDir, buildCommand, docRoot, webMode, id)
 	return err
 }
 
@@ -605,14 +617,14 @@ func (s *Store) SetSiteServe(id int64, docRoot, webMode string) error {
 // Repositories (GitHub deploy)
 // ---------------------------------------------------------------------------
 
-const repoCols = `id, project_site_id, provider, owner, name, url, auth_mode, branch, checkout_dir, public_key, key_fingerprint, last_commit, last_status, last_error, last_deploy_at, webhook_secret, detect_note, created_at`
+const repoCols = `id, project_site_id, provider, owner, name, url, auth_mode, branch, checkout_dir, public_key, key_fingerprint, last_commit, last_status, last_error, last_deploy_at, webhook_secret, detect_note, last_log, created_at`
 
 func scanRepo(row interface{ Scan(...any) error }) (*Repo, error) {
 	var r Repo
 	var created int64
 	err := row.Scan(&r.ID, &r.ProjectSiteID, &r.Provider, &r.Owner, &r.Name, &r.URL, &r.AuthMode, &r.Branch,
 		&r.CheckoutDir, &r.PublicKey, &r.KeyFingerprint, &r.LastCommit, &r.LastStatus, &r.LastError, &r.LastDeployAt,
-		&r.WebhookSecret, &r.DetectNote, &created)
+		&r.WebhookSecret, &r.DetectNote, &r.LastLog, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -706,7 +718,16 @@ func (s *Store) SetRepoBranch(id int64, branch string) error {
 // doc_root/web_mode untouched so an unlinked site keeps serving its current
 // files. Restores the invariant "RepoID valid ⇒ repo row exists" on unlink.
 func (s *Store) ClearRepoMapping(repoID int64) error {
-	_, err := s.db.Exec(`UPDATE sites SET repo_id = NULL, repo_subdir = '' WHERE repo_id = ?`, repoID)
+	// Also clear the per-site build state so a later relink can't inherit a stale
+	// build command / publish dir.
+	_, err := s.db.Exec(`UPDATE sites SET repo_id = NULL, repo_subdir = '', publish_dir = '', build_command = '' WHERE repo_id = ?`, repoID)
+	return err
+}
+
+// SetRepoLog stores the captured output of the last clone/build, for the deploy
+// log the Deployment tab links to.
+func (s *Store) SetRepoLog(id int64, log string) error {
+	_, err := s.db.Exec(`UPDATE repos SET last_log = ? WHERE id = ?`, log, id)
 	return err
 }
 
@@ -726,7 +747,7 @@ func (s *Store) UpdateRepoDeploy(id int64, commit, status, errMsg string, when t
 func (s *Store) ResetStaleRepoDeploys() error {
 	_, err := s.db.Exec(
 		`UPDATE repos SET last_status = 'error', last_error = 'the panel restarted during this deploy — click Deploy to retry'
-		 WHERE last_status IN ('cloning', 'deploying')`)
+		 WHERE last_status IN ('cloning', 'deploying', 'building')`)
 	return err
 }
 

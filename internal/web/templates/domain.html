@@ -44,22 +44,32 @@
     {{if eq $s.WebMode "proxy"}}<p class="mb-4 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-500">This domain is currently served by an app (below). Saving here switches it back to serving files.</p>{{end}}
 
     {{if $repo}}
-    {{/* Repo-fed: folder is a subfolder of the checkout */}}
+    {{/* Repo-fed: this domain serves one part (subfolder) of the project repo. */}}
     <form method="post" action="/sites/{{$s.ID}}/mapping" class="space-y-3">
       <input type="hidden" name="return" value="{{$d.Detail}}">
       <div>
         <label class="opp-lbl">Folder in the repository</label>
         <div class="flex flex-wrap items-center gap-2">
-          <input id="opp-subdir" name="subdir" value="{{$s.RepoSubdir}}" placeholder="e.g. frontend/dist/browser (blank = repo root)" class="opp-input min-w-[220px] flex-1">
+          <input id="opp-subdir" name="subdir" value="{{$s.RepoSubdir}}" placeholder="e.g. frontend  (blank = repo root)" class="opp-input min-w-[220px] flex-1 font-mono text-xs">
           <button type="button" class="opp-btn" data-browse="{{$repo.ID}}" data-target="opp-subdir">Browse…</button>
         </div>
+        <p class="mt-1 text-[11px] text-zinc-400">Picking a folder auto-fills the build command, output folder and mode below — adjust if needed.</p>
         <div id="opp-browse" class="mt-2 hidden max-h-56 space-y-1 overflow-y-auto rounded-xl border border-zinc-200 bg-white p-3"></div>
       </div>
       <div>
-        <label class="opp-lbl">Serve as</label>
-        <select name="mode" class="opp-select">{{range $d.Modes}}<option value="{{.Value}}" {{if eq .Value $s.WebMode}}selected{{end}}>{{.Label}}</option>{{end}}</select>
+        <label class="opp-lbl">Build command <span class="font-normal text-zinc-400">— optional, runs in the folder above</span></label>
+        <input id="opp-build" name="build_command" value="{{$s.BuildCommand}}" placeholder="e.g. npm ci && npm run build  ·  composer install  (blank = no build)" class="opp-input font-mono text-xs">
       </div>
-      <button class="opp-btn-primary">Save folder</button>
+      <div>
+        <label class="opp-lbl">Publish folder <span class="font-normal text-zinc-400">— build output, relative to the folder above</span></label>
+        <input id="opp-publish" name="publish_dir" value="{{$s.PublishDir}}" placeholder="e.g. dist/app/browser  ·  build  ·  public  (blank = serve the folder itself)" class="opp-input font-mono text-xs">
+      </div>
+      <div>
+        <label class="opp-lbl">Serve as</label>
+        <select id="opp-mode" name="mode" class="opp-select">{{range $d.Modes}}<option value="{{.Value}}" {{if eq .Value $s.WebMode}}selected{{end}}>{{.Label}}</option>{{end}}</select>
+      </div>
+      <p id="opp-detect-note" class="text-[11px] text-amber-600"></p>
+      <button class="opp-btn-primary">Save &amp; deploy</button>
     </form>
     {{else}}
     {{/* Not repo-fed: plain document root */}}
@@ -275,7 +285,8 @@
 {{$s := .S}}
 <a href="/domains/{{$s.ID}}?tab=overview" class="flex items-center gap-3 py-2.5 text-sm hover:text-blue-600">
   <span class="min-w-0 flex-1 truncate text-zinc-800">{{$s.Domain}}</span>
-  <span class="max-w-[45%] truncate font-mono text-xs text-zinc-500">{{if $s.RepoID.Valid}}{{if $s.RepoSubdir}}{{$s.RepoSubdir}}{{else}}/ (root){{end}}{{else}}<span class="text-amber-600">choose folder</span>{{end}}</span>
+  {{if $s.BuildCommand}}<span class="flex-none rounded-full border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-600">builds</span>{{end}}
+  <span class="max-w-[45%] truncate font-mono text-xs text-zinc-500">{{if $s.RepoID.Valid}}{{if $s.RepoSubdir}}{{$s.RepoSubdir}}{{else}}/ (root){{end}}{{if $s.PublishDir}} → {{$s.PublishDir}}{{end}}{{else}}<span class="text-amber-600">choose folder</span>{{end}}</span>
 </a>
 {{end}}
 
@@ -283,7 +294,7 @@
      Also rendered as an HTMX fragment by GET /repos/{id}/card while busy. */}}
 {{define "deployStatus"}}
 {{$r := .Repo}}{{$pid := .Pid}}{{$host := .Host}}
-{{$busy := false}}{{with $r}}{{if or (eq .LastStatus "cloning") (eq .LastStatus "deploying")}}{{$busy = true}}{{end}}{{end}}
+{{$busy := false}}{{with $r}}{{if or (eq .LastStatus "cloning") (eq .LastStatus "deploying") (eq .LastStatus "building")}}{{$busy = true}}{{end}}{{end}}
 <div id="deploybox" {{if $busy}}hx-get="/repos/{{$r.ID}}/card" hx-trigger="load delay:3s" hx-swap="outerHTML"{{end}}>
 {{if not $r}}
   <div class="opp-card p-5">
@@ -299,13 +310,14 @@
   <div class="opp-card p-5">
     <div class="flex flex-wrap items-center gap-2 text-sm">
       <a href="https://github.com/{{$r.Owner}}/{{$r.Name}}" target="_blank" rel="noopener" class="min-w-0 break-all font-mono text-zinc-700 hover:text-blue-600">{{$r.Owner}}/{{$r.Name}}@{{$r.Branch}}</a>
-      {{if $busy}}<span class="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">{{if eq $r.LastStatus "cloning"}}cloning…{{else}}deploying…{{end}}</span>
+      {{if $busy}}<span class="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">{{if eq $r.LastStatus "cloning"}}cloning…{{else if eq $r.LastStatus "building"}}building…{{else}}deploying…{{end}}</span>
       {{else if eq $r.LastStatus "ok"}}<span class="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700">deployed{{if $r.LastCommit}} {{$r.LastCommit}}{{end}}</span>
       {{else if eq $r.LastStatus "error"}}<span class="rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-700">failed</span>{{end}}
       {{if and (not $busy) $r.LastDeployAt.Valid}}<span class="text-xs text-zinc-400">{{since $r.LastDeployAt.Int64}}</span>{{end}}
     </div>
     {{if $r.LastError}}<p class="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{{$r.LastError}}</p>{{end}}
     {{if $r.DetectNote}}<p class="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">{{$r.DetectNote}}</p>{{end}}
+    {{if $r.LastLog}}<p class="mt-2"><a href="/repos/{{$r.ID}}/log" target="_blank" rel="noopener" class="text-xs text-blue-600 hover:underline">View build log ↗</a></p>{{end}}
 
     {{if and $r.PublicKey (ne $r.LastStatus "ok")}}
     <div class="mt-3 rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-600">

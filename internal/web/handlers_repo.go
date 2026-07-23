@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/openpropanel/openpropanel/internal/auth"
 	"github.com/openpropanel/openpropanel/internal/deploy"
@@ -146,8 +147,12 @@ func (s *Server) postMapSite(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.domains.MapSite(r.Context(), site.ID, r.FormValue("subdir"), r.FormValue("mode")); err != nil {
+	if err := s.domains.MapSite(r.Context(), site.ID, r.FormValue("subdir"), r.FormValue("publish_dir"), r.FormValue("build_command"), r.FormValue("mode")); err != nil {
 		s.backRedirect(w, r, "err", s.opErr(r, err))
+		return
+	}
+	if strings.TrimSpace(r.FormValue("build_command")) != "" {
+		s.backRedirect(w, r, "msg", site.Domain+": folder saved — building now (watch the Deployment tab)")
 		return
 	}
 	folder := r.FormValue("subdir")
@@ -170,4 +175,35 @@ func (s *Server) getRepoTree(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"path": r.URL.Query().Get("path"), "dirs": dirs})
+}
+
+// getRepoDetect suggests how to serve a chosen subfolder (mode/publish/build) so
+// the mapping form can pre-fill itself.
+func (s *Server) getRepoDetect(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.authorizeRepo(w, r)
+	if !ok {
+		return
+	}
+	mode, publish, build, note, err := s.domains.DetectFolder(repo.ID, r.URL.Query().Get("path"))
+	if err != nil {
+		http.Error(w, s.opErr(r, err), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"mode": mode, "publish": publish, "build": build, "note": note})
+}
+
+// getRepoLog returns the captured output of the last clone/build as plain text.
+func (s *Server) getRepoLog(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.authorizeRepo(w, r)
+	if !ok {
+		return
+	}
+	log := s.domains.RepoLog(repo.ID)
+	if strings.TrimSpace(log) == "" {
+		log = "No build output recorded yet."
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write([]byte(log))
 }

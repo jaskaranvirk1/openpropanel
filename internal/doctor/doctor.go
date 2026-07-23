@@ -64,6 +64,16 @@ func Run(cfg *config.Config, cfgPath string) int {
 		} else {
 			warn("git not found", "Deploy from GitHub is disabled — dnf install -y git")
 		}
+		if _, err := exec.LookPath("npm"); err == nil {
+			ok("node/npm present", "")
+		} else {
+			warn("node/npm not found", "Frontend builds (Angular/React/Vite) are disabled — dnf install -y nodejs")
+		}
+		if _, err := exec.LookPath("composer"); err == nil {
+			ok("composer present", "")
+		} else {
+			warn("composer not found", "Laravel/PHP builds are disabled — install from getcomposer.org")
+		}
 		if system.ServiceActive(ctx, "firewalld") {
 			ok("firewalld active", "")
 		} else {

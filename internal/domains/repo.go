@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	osuser "os/user"
+	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -139,8 +140,10 @@ func (s *Service) LinkRepo(ctx context.Context, projectSiteID int64, rawURL, bra
 // default command timeout, with the UI polling repo status instead of hanging.
 // ---------------------------------------------------------------------------
 
-// repoJobTimeout bounds one background clone/deploy run.
-const repoJobTimeout = 10 * time.Minute
+// repoJobTimeout bounds one background clone/deploy/build run. A monorepo running
+// several `npm ci && npm run build` sequentially needs generous headroom; each
+// individual build is separately bounded by deploy.buildTimeout.
+const repoJobTimeout = 30 * time.Minute
 
 // runRepoJob starts fn for a project in the background, or — when a job for
 // that project is already running — queues fn as the single follow-up run. The
@@ -305,11 +308,11 @@ func (s *Service) activateOnce(ctx context.Context, repoID int64) {
 	if fresh, ferr := s.store.SiteByID(repo.ProjectSiteID); ferr == nil {
 		site = fresh
 	}
-	subdir, mode, detectNote, mapOK := deploy.DetectApp(repo.CheckoutDir)
-	if mapOK && (!site.RepoID.Valid || site.RepoID.Int64 != repo.ID) {
-		if merr := s.MapSite(ctx, site.ID, subdir, mode); merr != nil {
-			log.Printf("repo %d: auto-map %s -> %q (%s): %v", repoID, site.Domain, subdir, mode, merr)
-			detectNote = joinNotes(detectNote, "auto-detected /"+subdir+" ("+mode+") but could not apply it — set the folder manually below")
+	mode, publishDir, buildCommand, detectNote := deploy.DetectFolder(repo.CheckoutDir)
+	if mode != "" && (!site.RepoID.Valid || site.RepoID.Int64 != repo.ID) {
+		if merr := s.applyMapping(ctx, site, repo, "", publishDir, buildCommand, mode); merr != nil {
+			log.Printf("repo %d: auto-map %s (%s): %v", repoID, site.Domain, mode, merr)
+			detectNote = joinNotes(detectNote, "auto-detected the app type but could not apply it — set the folder manually below")
 		}
 	}
 	_ = s.store.SetRepoDetectNote(repoID, detectNote)
@@ -317,6 +320,20 @@ func (s *Service) activateOnce(ctx context.Context, repoID int64) {
 		if sec, serr := deploy.NewWebhookSecret(); serr == nil {
 			_ = s.store.SetRepoWebhookSecret(repoID, sec)
 		}
+	}
+	// Build every mapped part (the main site just mapped above, plus any subdomain
+	// already carrying a build command), THEN reload — a failed build never
+	// exposes a not-yet-built vhost.
+	_ = s.store.UpdateRepoDeploy(repoID, commit, "building", "", time.Now())
+	buildLog, berr := s.buildProject(ctx, repo, repo.ProjectSiteID, uid, gid, s.projectHome(repo.ProjectSiteID))
+	_ = s.store.SetRepoLog(repoID, buildLog)
+	if berr != nil {
+		s.recordRepoFailure(repoID, commit, berr)
+		return
+	}
+	if err := s.web().Apply(ctx); err != nil {
+		s.recordRepoFailure(repoID, commit, err)
+		return
 	}
 	_ = s.store.UpdateRepoDeploy(repoID, commit, "ok", "", time.Now())
 }
@@ -342,6 +359,16 @@ func (s *Service) deployOnce(ctx context.Context, repoID, projectSiteID int64) {
 	}
 	if aerr := s.deploy.InstallRepoAuth(ctx, repo, uid, gid); aerr != nil {
 		log.Printf("repo %d: enable terminal git pull: %v", repoID, aerr)
+	}
+	// Rebuild each mapped part from the fresh checkout before reloading. A failed
+	// build keeps the previous build serving (git reset --hard leaves the
+	// gitignored dist/ output in place).
+	_ = s.store.UpdateRepoDeploy(repoID, commit, "building", "", time.Now())
+	buildLog, berr := s.buildProject(ctx, repo, projectSiteID, uid, gid, s.projectHome(projectSiteID))
+	_ = s.store.SetRepoLog(repoID, buildLog)
+	if berr != nil {
+		s.recordRepoFailure(repoID, commit, berr)
+		return
 	}
 	if err := s.web().Reload(ctx); err != nil {
 		s.recordRepoFailure(repoID, commit, fmt.Errorf("deployed %s but the web server reload failed: %w", commit, err))
@@ -374,7 +401,7 @@ func (s *Service) ChangeRepoBranch(repoID int64, branch string) error {
 
 // MapSite points a site's document root at a subfolder of its project's repo
 // checkout and sets the serving mode (php|static|spa), then re-renders its vhost.
-func (s *Service) MapSite(ctx context.Context, siteID int64, subdir, mode string) error {
+func (s *Service) MapSite(ctx context.Context, siteID int64, subdir, publishDir, buildCommand, mode string) error {
 	site, err := s.store.SiteByID(siteID)
 	if err != nil {
 		return err
@@ -386,10 +413,26 @@ func (s *Service) MapSite(ctx context.Context, siteID int64, subdir, mode string
 	if err != nil {
 		return errors.New("this project has no repository — link one first")
 	}
-	docRoot, rel, err := repoSubPath(repo.CheckoutDir, subdir)
-	if err != nil {
+	if err := s.applyMapping(ctx, site, repo, subdir, publishDir, buildCommand, mode); err != nil {
 		return err
 	}
+	// With a build configured, don't reload yet: build first (background) and let
+	// buildOnce reload only on success, so the currently-served build keeps running
+	// until the new output is ready (no 502 window). With no build, serve the new
+	// folder immediately.
+	if strings.TrimSpace(buildCommand) != "" {
+		s.StartBuild(s.projectIDFor(site))
+		return nil
+	}
+	return s.web().Apply(ctx)
+}
+
+// applyMapping persists a site's repo mapping (subfolder = build cwd, publish dir
+// = output, build command, serving mode) and re-renders its vhost pointed at
+// checkout/subdir/publishDir. It does NOT reload the web server or run the build
+// — callers decide when to Apply/build, so a failed build never reloads a broken
+// vhost.
+func (s *Service) applyMapping(ctx context.Context, site *store.Site, repo *store.Repo, subdir, publishDir, buildCommand, mode string) error {
 	switch mode {
 	case "":
 		mode = store.WebModePHP
@@ -397,18 +440,194 @@ func (s *Service) MapSite(ctx context.Context, siteID int64, subdir, mode string
 	default:
 		return errors.New("invalid serving mode")
 	}
-	if err := s.store.SetSiteMapping(siteID, sql.NullInt64{Int64: repo.ID, Valid: true}, rel, docRoot, mode); err != nil {
+	buildCommand = sanitizeBuild(buildCommand)
+	_, docRoot, subRel, pubRel, err := repoBuildPath(repo.CheckoutDir, subdir, publishDir)
+	if err != nil {
+		return err
+	}
+	repoID := sql.NullInt64{Int64: repo.ID, Valid: true}
+	if err := s.store.SetSiteMapping(site.ID, repoID, subRel, pubRel, buildCommand, docRoot, mode); err != nil {
 		return err
 	}
 	site.DocRoot, site.WebMode = docRoot, mode
-	site.RepoID = sql.NullInt64{Int64: repo.ID, Valid: true}
-	// Mapping always yields a file-serving mode; drop any reverse-proxy app so
-	// its port is freed and its unit removed.
+	site.RepoID, site.RepoSubdir, site.PublishDir, site.BuildCommand = repoID, subRel, pubRel, buildCommand
+	// Mapping always yields a file-serving mode; drop any reverse-proxy app so its
+	// port is freed and its unit removed.
 	s.removeAppFor(ctx, site)
-	if err := s.renderVHost(site); err != nil {
-		return err
+	return s.renderVHost(site)
+}
+
+// repoBuildPath validates and resolves the build working directory (checkout/
+// subdir) and the served doc root (checkout/subdir/publishDir), both confined to
+// the checkout with a vhost-safe path. Returns the cleaned forward-slash rels for
+// storage.
+func repoBuildPath(checkout, subdir, publishDir string) (buildCwd, docRoot, subRel, pubRel string, err error) {
+	buildCwd, subRel, err = repoSubPath(checkout, subdir)
+	if err != nil {
+		return "", "", "", "", err
 	}
-	return s.web().Apply(ctx)
+	subRel = filepath.ToSlash(subRel)
+	pubRel = strings.TrimPrefix(path.Clean("/"+strings.TrimSpace(publishDir)), "/")
+	if pubRel == "." {
+		pubRel = ""
+	}
+	served := subRel
+	if pubRel != "" {
+		served = path.Join(subRel, pubRel)
+	}
+	docRoot, _, err = repoSubPath(checkout, served)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	return buildCwd, docRoot, subRel, pubRel, nil
+}
+
+// sanitizeBuild trims a tenant build command, strips NUL, and caps its length.
+// The rest runs verbatim as the tenant (never as root) via bash -lc.
+func sanitizeBuild(s string) string {
+	s = strings.ReplaceAll(s, "\x00", "")
+	s = strings.TrimSpace(s)
+	if len(s) > 8192 {
+		s = s[:8192]
+	}
+	return s
+}
+
+// projectSites returns a project's main site plus its subdomains.
+func (s *Service) projectSites(projectSiteID int64) []*store.Site {
+	var out []*store.Site
+	if main, err := s.store.SiteByID(projectSiteID); err == nil {
+		out = append(out, main)
+	}
+	if subs, err := s.store.ListSubdomains(projectSiteID); err == nil {
+		out = append(out, subs...)
+	}
+	return out
+}
+
+// projectHome resolves the project owner's home directory (for build tool caches),
+// or "" in dev / when unresolved.
+func (s *Service) projectHome(projectSiteID int64) string {
+	if s.cfg.Dev {
+		return ""
+	}
+	site, err := s.store.SiteByID(projectSiteID)
+	if err != nil {
+		return ""
+	}
+	owner, err := s.store.UserByID(site.UserID)
+	if err != nil || owner.SystemUser == "" {
+		return ""
+	}
+	if u, e := osuser.Lookup(owner.SystemUser); e == nil {
+		return u.HomeDir
+	}
+	return ""
+}
+
+// buildProject runs the build command of every mapped part of a project (as the
+// tenant, in each part's subfolder), aggregating output for the deploy log. It
+// stops at the first failing part (naming it). After a successful build it
+// verifies the served folder actually contains an entrypoint so a broken build
+// can never silently serve raw source.
+func (s *Service) buildProject(ctx context.Context, repo *store.Repo, projectSiteID int64, uid, gid uint32, home string) (string, error) {
+	var b strings.Builder
+	for _, site := range s.projectSites(projectSiteID) {
+		if !site.RepoID.Valid || site.RepoID.Int64 != repo.ID || strings.TrimSpace(site.BuildCommand) == "" {
+			continue
+		}
+		cwd := filepath.Join(repo.CheckoutDir, filepath.FromSlash(site.RepoSubdir))
+		where := site.RepoSubdir
+		if where == "" {
+			where = "(repo root)"
+		}
+		fmt.Fprintf(&b, "\n=== building %s in %s ===\n$ %s\n", site.Domain, where, site.BuildCommand)
+		out, err := s.deploy.RunBuild(ctx, uid, gid, home, cwd, site.BuildCommand)
+		b.WriteString(out)
+		if err != nil {
+			return b.String(), fmt.Errorf("build failed for %s: %w", site.Domain, err)
+		}
+		if verr := s.verifyServeDir(site); verr != nil {
+			return b.String(), fmt.Errorf("%s: %w", site.Domain, verr)
+		}
+	}
+	return b.String(), nil
+}
+
+// verifyServeDir confirms a built site's doc root has a servable entrypoint.
+func (s *Service) verifyServeDir(site *store.Site) error {
+	if s.cfg.Dev {
+		return nil // no real build output on the dev host
+	}
+	entry := "index.html"
+	if site.WebMode == store.WebModePHP {
+		entry = "index.php"
+	}
+	if _, err := os.Stat(filepath.Join(site.DocRoot, entry)); err == nil {
+		return nil
+	}
+	return fmt.Errorf("the build finished but no %s was found in the publish folder — check the build's output directory", entry)
+}
+
+// StartBuild rebuilds a project's mapped parts in the background (used after an
+// interactive mapping change).
+func (s *Service) StartBuild(projectSiteID int64) {
+	repo, err := s.store.RepoByProject(projectSiteID)
+	if err != nil {
+		return
+	}
+	_ = s.store.UpdateRepoDeploy(repo.ID, repo.LastCommit, "building", "", time.Now())
+	s.runRepoJob(projectSiteID, repo.ID, func(ctx context.Context) { s.buildOnce(ctx, repo.ID, projectSiteID) })
+}
+
+func (s *Service) buildOnce(ctx context.Context, repoID, projectSiteID int64) {
+	repo, err := s.store.RepoByID(repoID)
+	if err != nil {
+		return
+	}
+	_ = s.store.UpdateRepoDeploy(repoID, repo.LastCommit, "building", "", time.Now())
+	uid, gid, err := s.projectTenant(projectSiteID)
+	if err != nil {
+		s.recordRepoFailure(repoID, repo.LastCommit, err)
+		return
+	}
+	buildLog, berr := s.buildProject(ctx, repo, projectSiteID, uid, gid, s.projectHome(projectSiteID))
+	_ = s.store.SetRepoLog(repoID, buildLog)
+	if berr != nil {
+		s.recordRepoFailure(repoID, repo.LastCommit, berr)
+		return
+	}
+	// Apply (validate + reload) the mapping vhost that applyMapping wrote but did
+	// not yet load, now that its published output exists.
+	if err := s.web().Apply(ctx); err != nil {
+		s.recordRepoFailure(repoID, repo.LastCommit, err)
+		return
+	}
+	_ = s.store.UpdateRepoDeploy(repoID, repo.LastCommit, "ok", "", time.Now())
+}
+
+// DetectFolder inspects a subfolder of a repo's checkout and suggests how to
+// serve it (mode + publish dir + build command + a note). Used to pre-fill the
+// mapping form when the operator picks a folder.
+func (s *Service) DetectFolder(repoID int64, subdir string) (mode, publishDir, buildCommand, note string, err error) {
+	repo, err := s.store.RepoByID(repoID)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	abs, _, err := repoSubPath(repo.CheckoutDir, subdir)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	m, pub, bc, n := deploy.DetectFolder(abs)
+	return m, pub, bc, n, nil
+}
+
+// RepoLog returns the captured output of a repo's last clone/build.
+func (s *Service) RepoLog(repoID int64) string {
+	if repo, err := s.store.RepoByID(repoID); err == nil {
+		return repo.LastLog
+	}
+	return ""
 }
 
 // RepoHead returns the checked-out HEAD commit's details for a project's repo,

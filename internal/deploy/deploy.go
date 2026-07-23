@@ -243,7 +243,7 @@ func (m *Manager) runGit(ctx context.Context, r *store.Repo, uid, gid uint32, di
 		full = append([]string{"-C", dir}, full...)
 	}
 	full = append(full, args...)
-	return system.RunAs(ctx, uid, gid, m.gitEnv(keyPath, known), "git", full...)
+	return system.RunAs(ctx, uid, gid, "", m.gitEnv(keyPath, known), "git", full...)
 }
 
 // cloneURL is the SSH url for key/pat modes, HTTPS for public.
@@ -407,6 +407,101 @@ func (m *Manager) InstallRepoAuth(ctx context.Context, r *store.Repo, uid, gid u
 
 // RemoveRepoAuth deletes the durable deploy-key copy beside a checkout (on unlink).
 func (m *Manager) RemoveRepoAuth(r *store.Repo) { _ = os.RemoveAll(m.repoAuthDir(r)) }
+
+// buildTimeout bounds a single build step (npm ci / composer install can be slow).
+const buildTimeout = 15 * time.Minute
+
+// RunBuild runs a tenant's build command in dir (a subfolder of the checkout) as
+// the tenant's non-root system user, returning the combined stdout+stderr for the
+// deploy log. home is the tenant's home directory (so npm/composer caches resolve
+// and persist across deploys). The command is passed as a single argv element to
+// `bash -lc`, so there is no shell-injection surface INTO the panel — the tenant
+// merely runs their own build as their own uid (same trust boundary as git).
+func (m *Manager) RunBuild(ctx context.Context, uid, gid uint32, home, dir, command string) (string, error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return "", nil
+	}
+	if m.cfg.Dev {
+		return "(dev) build skipped: " + command + "\n", nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, buildTimeout)
+	defer cancel()
+	// Stream output into a capped tail buffer so a build that emits unbounded
+	// output (e.g. `yes`) can never grow the root panel's memory; if total output
+	// blows past outputLimit, cancel the build early instead of spinning to the
+	// timeout.
+	w := &capWriter{max: 64 << 10, limit: 100 << 20, cancel: cancel}
+	err := system.RunAsOut(ctx, uid, gid, dir, m.buildEnv(home), w, "bash", "-lc", command)
+	out := w.String()
+	if w.total > w.limit {
+		return out, fmt.Errorf("build stopped: it produced more than 100 MB of output")
+	}
+	if err != nil {
+		// Include only a bounded tail in the error so last_error/Classify stay small.
+		snippet := out
+		if len(snippet) > 2048 {
+			snippet = snippet[len(snippet)-2048:]
+		}
+		return out, fmt.Errorf("%w: %s", err, strings.TrimSpace(snippet))
+	}
+	return out, nil
+}
+
+// capWriter keeps only the last max bytes written (build errors are at the end)
+// and cancels the run once total output exceeds limit. Bounds root memory
+// regardless of how much a tenant's build prints.
+type capWriter struct {
+	max, limit, total int
+	buf               []byte
+	cancel            context.CancelFunc
+}
+
+func (c *capWriter) Write(p []byte) (int, error) {
+	c.total += len(p)
+	c.buf = append(c.buf, p...)
+	if len(c.buf) > c.max {
+		c.buf = c.buf[len(c.buf)-c.max:]
+	}
+	if c.limit > 0 && c.total > c.limit && c.cancel != nil {
+		c.cancel()
+	}
+	return len(p), nil
+}
+func (c *capWriter) String() string { return string(c.buf) }
+
+// buildEnv is a minimal, non-root environment for a build. Like gitEnv it builds
+// from an allowlist rather than inheriting root's full environment.
+func (m *Manager) buildEnv(home string) []string {
+	if home == "" {
+		home = "/"
+	}
+	// Prepend /usr/local/bin (where node/composer commonly land) to a sane PATH.
+	path := "/usr/local/bin:/usr/bin:/bin"
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "PATH=") {
+			path = "/usr/local/bin:" + strings.TrimPrefix(kv, "PATH=")
+		}
+	}
+	env := []string{
+		"HOME=" + home,
+		"PATH=" + path,
+		"CI=1",
+		"GIT_TERMINAL_PROMPT=0",
+		"npm_config_fund=false",
+		"npm_config_audit=false",
+		"npm_config_progress=false",
+		// Deliberately NO NODE_ENV=production: `npm ci` with it set skips
+		// devDependencies, which for Angular/React/Vite ARE the build toolchain —
+		// the build would fail with "ng: not found". Leave it unset.
+	}
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "LANG=") || strings.HasPrefix(kv, "LC_") || strings.HasPrefix(kv, "TERM=") {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
 
 // CommitInfo describes a repo's checked-out HEAD commit for the deploy view.
 type CommitInfo struct {
