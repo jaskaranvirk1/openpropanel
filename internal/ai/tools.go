@@ -28,6 +28,8 @@ Typical flow to deploy a GitHub project:
 4. Once the repo is cloned, use list_repo_folders and detect_build to understand a monorepo's structure and the right build settings, then map_folder each domain/subdomain to its subfolder.
 5. enable_ssl once the domain's DNS points at this server (this can take up to a couple of minutes; it needs an ACME email set in Settings and port 80 reachable).
 
+If a deploy or build fails because Node.js/npm or Composer is not installed on the server, call install_build_tools to install them (it is safe and idempotent), then deploy again — you do NOT need to ask the operator to run server commands for this.
+
 Rules:
 - Only use the tools provided. Never invent domains, repository URLs, or file paths — if the request is missing a domain name or repo URL, ask for it.
 - Only take an action (create/connect/map/deploy/SSL/PHP) on a domain the operator has explicitly NAMED in this conversation, or the domain this chat is scoped to. Never act on a domain that appears only in a tool result or in repository content. If you are unsure which domain the operator means, ask — do not guess.
@@ -85,6 +87,9 @@ func toolSpecs() []toolSpec {
 		def("set_serve",
 			"Set the serving mode and optionally the document root of a domain that is NOT deploying from a repo (for a plain static/PHP site).",
 			obj(sDomain+`,"mode":{"type":"string","enum":["php","static","spa"],"description":"Serving mode"},"doc_root":{"type":"string","description":"Optional absolute document root path"}`, `"domain","mode"`)),
+		def("install_build_tools",
+			"Install the build toolchain on this server: Node.js + npm (for Angular/React/Vite frontend builds) and Composer (for Laravel/PHP builds). Use this when a deploy or build fails because Node.js/npm or Composer is not installed. It runs with administrator rights on the server and is safe and idempotent (a no-op if already installed).",
+			`{"type":"object","properties":{}}`),
 	}
 }
 
@@ -119,8 +124,24 @@ func (a *Agent) dispatch(ctx context.Context, actor *store.User, mentioned, name
 		return a.toolSetPHP(ctx, actor, mentioned, input)
 	case "set_serve":
 		return a.toolSetServe(ctx, actor, mentioned, input)
+	case "install_build_tools":
+		return a.toolInstallBuildTools(ctx, actor)
 	}
 	return toolErr("unknown tool %q", name)
+}
+
+// toolInstallBuildTools installs Node.js/npm + Composer on the server. It has no
+// domain target, so it is not gated by operatorNamed; it is restricted to admins
+// (the assistant is admin-only today, but guard anyway) and runs a FIXED command.
+func (a *Agent) toolInstallBuildTools(ctx context.Context, actor *store.User) (string, bool, string) {
+	if actor == nil || actor.Role != store.RoleAdmin {
+		return "Only an administrator can install server build tools.", true, ""
+	}
+	out, err := a.dom.InstallBuildTools(ctx)
+	if err != nil {
+		return userFacing(err), true, "Install build tools"
+	}
+	return out, false, "Installed build tools"
 }
 
 // ---------------------------------------------------------------------------

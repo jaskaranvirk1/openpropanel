@@ -48,9 +48,10 @@ type Service struct {
 	deploy    *deploy.Manager
 	appserver *appserver.Manager
 
-	switchMu  sync.Mutex // serializes web-server switches
-	accountMu sync.Mutex // serializes account deletion (last-admin guard)
-	tenantMu  sync.Mutex // serializes JIT system-user provisioning (ensureTenant)
+	switchMu     sync.Mutex // serializes web-server switches
+	accountMu    sync.Mutex // serializes account deletion (last-admin guard)
+	tenantMu     sync.Mutex // serializes JIT system-user provisioning (ensureTenant)
+	buildToolsMu sync.Mutex // serializes build-tool installs (one dnf run at a time)
 
 	jobMu sync.Mutex         // guards jobs
 	jobs  map[int64]*repoJob // background clone/deploy jobs, keyed by PROJECT site ID

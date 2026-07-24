@@ -168,6 +168,7 @@ func (s *Server) Handler() http.Handler {
 	app.Handle("GET /settings", auth.RequireAdmin(http.HandlerFunc(s.getSettings)))
 	app.Handle("POST /settings", auth.RequireAdmin(http.HandlerFunc(s.postSettings)))
 	app.Handle("POST /settings/ai", auth.RequireAdmin(http.HandlerFunc(s.postSettingsAI)))
+	app.Handle("POST /settings/install-tools", auth.RequireAdmin(http.HandlerFunc(s.postInstallBuildTools)))
 	app.Handle("POST /settings/panel-cert", auth.RequireAdmin(http.HandlerFunc(s.postPanelCert)))
 	app.Handle("POST /settings/webserver", auth.RequireAdmin(http.HandlerFunc(s.postWebServer)))
 	app.Handle("POST /settings/regenerate", auth.RequireAdmin(http.HandlerFunc(s.postRegenerate)))

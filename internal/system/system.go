@@ -129,6 +129,30 @@ func Run(ctx context.Context, name string, args ...string) (string, error) {
 	return string(out), nil
 }
 
+// RunHost runs a command OUTSIDE Open ProPanel's own service sandbox by asking
+// systemd (PID 1) to execute it in a fresh transient unit (systemd-run). The
+// panel's unit sets ProtectSystem=true, which mounts /usr read-only and so blocks
+// operations that must write there — notably a package install. A transient unit
+// is not subject to the panel's sandbox, so those operations succeed. Like Run,
+// arguments are passed as a slice — never through a shell — so there is no
+// shell-injection surface; callers must still pass only trusted, fixed arguments.
+func RunHost(ctx context.Context, name string, args ...string) (string, error) {
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		defer cancel()
+	}
+	Audit("run-host", name+" "+strings.Join(args, " "))
+	full := append([]string{"--pipe", "--wait", "--collect", "--quiet", "--", name}, args...)
+	cmd := exec.CommandContext(ctx, "systemd-run", full...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("systemd-run %s %s: %w: %s",
+			name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
 // RunInput is like Run but feeds stdin to the command. It is used to pipe SQL
 // to the mysql client so that secrets (passwords) never appear in the process
 // argument list. Like Run, arguments are passed as a slice — no shell.

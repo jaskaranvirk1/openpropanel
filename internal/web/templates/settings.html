@@ -129,6 +129,19 @@
   </div>
 </div>
 
+{{/* Build tools */}}
+<div class="opp-card mt-6 p-5">
+  <h2 class="mb-1 text-sm font-semibold text-zinc-900">Build tools</h2>
+  <p class="mb-4 text-xs text-zinc-500">
+    Install the toolchain that GitHub deploys use to build projects on this server: <strong>Node.js + npm</strong> (Angular/React/Vite frontends) and <strong>Composer</strong> (Laravel/PHP). Safe to run anytime — it's a no-op if they're already installed. Takes up to a couple of minutes.
+    {{if .Data.Dev}}<span class="text-amber-700">Simulated in dev mode.</span>{{end}}
+  </p>
+  <form method="post" action="/settings/install-tools"
+        onsubmit="var b=this.querySelector('button');b.disabled=true;b.textContent='Installing… (up to ~2 min)';">
+    <button class="opp-btn-primary">Install build tools</button>
+  </form>
+</div>
+
 {{/* Maintenance */}}
 <div class="opp-card mt-6 p-5">
   <h2 class="mb-1 text-sm font-semibold text-zinc-900">Maintenance</h2>

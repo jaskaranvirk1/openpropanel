@@ -119,6 +119,21 @@ func (s *Server) postSettingsAI(w http.ResponseWriter, r *http.Request) {
 	redirect(w, r, "/settings", "msg", msg)
 }
 
+// postInstallBuildTools installs the deploy build toolchain (Node.js/npm +
+// Composer) on the server (admin-only). Runs outside the panel sandbox via
+// systemd-run; the command set is fixed.
+func (s *Server) postInstallBuildTools(w http.ResponseWriter, r *http.Request) {
+	// Package installs can take a while; bound below the server write timeout.
+	ctx, cancel := context.WithTimeout(r.Context(), 160*time.Second)
+	defer cancel()
+	out, err := s.domains.InstallBuildTools(ctx)
+	if err != nil {
+		redirect(w, r, "/settings", "err", "Install failed: "+s.opErr(r, err))
+		return
+	}
+	redirect(w, r, "/settings", "msg", out)
+}
+
 // sanitizeConvID keeps only a bounded, safe conversation identifier from client
 // input (it is only a map key, but stay strict).
 func sanitizeConvID(id string) string {
