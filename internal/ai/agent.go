@@ -46,7 +46,23 @@ func New(cfg *config.Config, dom *domains.Service, st *store.Store) *Agent {
 type conversation struct {
 	mu       sync.Mutex
 	messages []wireMessage
-	lastUsed time.Time
+	// mentioned accumulates ONLY operator-supplied text (their typed messages and
+	// any domain this chat is scoped to) — never tool-result content. operatorNamed
+	// checks a mutating action's target against it, so prompt-injected repository
+	// text cannot pivot the agent onto a domain the operator never named.
+	mentioned string
+	lastUsed  time.Time
+}
+
+// maxMentioned bounds the operator-named allowlist text.
+const maxMentioned = 16384
+
+func boundedAppend(s, add string) string {
+	s += add
+	if len(s) > maxMentioned {
+		s = s[len(s)-maxMentioned:]
+	}
+	return s
 }
 
 // Action is a mutating operation the agent performed on the server, surfaced to
@@ -72,8 +88,11 @@ func (a *Agent) Configured() bool {
 
 // Chat processes one user message on conversation convID acting as actor, runs
 // the tool-use loop (executing deployment actions as needed), and returns the
-// assistant's reply. It serializes concurrent posts to the same conversation.
-func (a *Agent) Chat(ctx context.Context, actor *store.User, convID, userText string) (Reply, error) {
+// assistant's reply. contextDomain (may be "") is the domain a per-domain chat
+// is scoped to — the CALLER must have already authorized the actor for it; it is
+// treated as operator-named and seeds the conversation's subject. It serializes
+// concurrent posts to the same conversation.
+func (a *Agent) Chat(ctx context.Context, actor *store.User, convID, userText, contextDomain string) (Reply, error) {
 	if !a.Configured() {
 		return Reply{}, ErrNotConfigured
 	}
@@ -89,6 +108,15 @@ func (a *Agent) Chat(ctx context.Context, actor *store.User, convID, userText st
 	conv.mu.Lock()
 	defer conv.mu.Unlock()
 
+	// Record what the operator named (their message + the chat's scoped domain) so
+	// operatorNamed can gate mutating actions. This is fed ONLY from operator input.
+	first := len(conv.messages) == 0
+	conv.mentioned = boundedAppend(conv.mentioned, " "+userText+" "+contextDomain)
+	seed := userText
+	if first && strings.TrimSpace(contextDomain) != "" {
+		seed = "(This conversation is about the domain " + contextDomain + ".)\n\n" + userText
+	}
+
 	// Snapshot the last known-good transcript so a FAILED turn is rolled back
 	// completely. A mid-turn API failure (rate limit, timeout, network blip) can
 	// otherwise leave the transcript ending on a user turn — or an assistant
@@ -98,7 +126,7 @@ func (a *Agent) Chat(ctx context.Context, actor *store.User, convID, userText st
 	// corrupted transcript tail is discarded.
 	snapshot := append([]wireMessage(nil), conv.messages...)
 
-	userBlocks, _ := json.Marshal([]textBlock{{Type: "text", Text: userText}})
+	userBlocks, _ := json.Marshal([]textBlock{{Type: "text", Text: seed}})
 	conv.messages = append(conv.messages, wireMessage{Role: "user", Content: userBlocks})
 
 	reply, err := a.run(ctx, actor, conv)
@@ -179,7 +207,7 @@ func (a *Agent) run(ctx context.Context, actor *store.User, conv *conversation) 
 		// tool_results for this assistant turn go back together, in order).
 		results := make([]toolResultBlock, 0, len(toolUses))
 		for _, tu := range toolUses {
-			content, isErr, summary := a.dispatch(ctx, actor, tu.Name, tu.Input)
+			content, isErr, summary := a.dispatch(ctx, actor, conv.mentioned, tu.Name, tu.Input)
 			results = append(results, toolResultBlock{
 				Type:      "tool_result",
 				ToolUseID: tu.ID,

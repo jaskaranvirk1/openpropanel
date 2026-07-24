@@ -17,6 +17,10 @@
     (window.crypto && window.crypto.randomUUID && window.crypto.randomUUID()) ||
     "c" + Date.now() + "-" + Math.random().toString(36).slice(2);
 
+  // A per-domain chat scopes the conversation to one domain (data-domain on the
+  // form); the operator then need not name it and it's authorized server-side.
+  var scopedDomain = (form.dataset && form.dataset.domain) || "";
+
   function el(tag, cls, text) {
     var e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -90,7 +94,7 @@
       var res = await fetch("/assistant/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conv_id: convID, message: message }),
+        body: JSON.stringify({ conv_id: convID, message: message, domain: scopedDomain }),
       });
       var data = {};
       try { data = await res.json(); } catch (e) { data = {}; }

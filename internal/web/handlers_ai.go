@@ -12,6 +12,7 @@ import (
 
 	"github.com/openpropanel/openpropanel/internal/ai"
 	"github.com/openpropanel/openpropanel/internal/auth"
+	"github.com/openpropanel/openpropanel/internal/store"
 )
 
 // assistantVM is the AI assistant chat page's view model.
@@ -43,11 +44,24 @@ func (s *Server) postAssistantChat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ConvID  string `json:"conv_id"`
 		Message string `json:"message"`
+		Domain  string `json:"domain"` // optional: a per-domain chat's scoped domain
 	}
 	// Cap the request body: a chat message is small.
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Could not read the message."})
 		return
+	}
+
+	// A per-domain chat may scope the conversation to one domain. Authorize the
+	// operator for it here (admin: any site; user: own) before trusting it as
+	// context — a client cannot use this to widen its reach.
+	contextDomain := ""
+	if d := strings.ToLower(strings.TrimSpace(req.Domain)); d != "" {
+		if site, err := s.store.SiteByDomain(strings.TrimSuffix(d, ".")); err == nil {
+			if u.Role == store.RoleAdmin || site.UserID == u.ID {
+				contextDomain = site.Domain
+			}
+		}
 	}
 
 	// Namespace the conversation by the acting user so transcripts can never be
@@ -59,7 +73,7 @@ func (s *Server) postAssistantChat(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 150*time.Second)
 	defer cancel()
 
-	reply, err := s.assistant.Chat(ctx, u, convID, req.Message)
+	reply, err := s.assistant.Chat(ctx, u, convID, req.Message, contextDomain)
 	if err != nil {
 		log.Printf("assistant chat error [user %d]: %v", u.ID, err)
 		status := http.StatusBadGateway

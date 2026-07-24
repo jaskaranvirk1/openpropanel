@@ -42,8 +42,9 @@ type domainVM struct {
 	Modes         []modeOption
 	Host          string
 	IsAdmin       bool
-	ActiveTab     string // overview | deployment | ssl
+	ActiveTab     string // overview | deployment | ssl | assistant
 	Detail        string // this domain's own detail URL, for form "return" fields
+	AIAssistant   bool   // show the AI Assistant tab (configured + admin)
 
 	App        *store.App // reverse-proxy app config, or nil
 	AppActive  bool       // managed app unit is running
@@ -163,8 +164,18 @@ func (s *Server) getDomain(w http.ResponseWriter, r *http.Request) {
 			ownerName = owner.Username
 		}
 	}
+	// The AI Assistant tab is offered only when the assistant is configured and
+	// the viewer is an admin (the assistant is admin-only and holds the panel key).
+	aiProvider, aiModel, aiKeySet := s.cfg.AISettings()
+	aiAssistant := aiKeySet && aiProvider == "claude" && strings.TrimSpace(aiModel) != "" && viewer.Role == store.RoleAdmin
 	tab := r.URL.Query().Get("tab")
-	if tab != "deployment" && tab != "ssl" {
+	switch tab {
+	case "deployment", "ssl":
+	case "assistant":
+		if !aiAssistant {
+			tab = "overview"
+		}
+	default:
 		tab = "overview"
 	}
 	// The last-deployed commit (best-effort, tenant git) for the Deployment tab.
@@ -185,7 +196,8 @@ func (s *Server) getDomain(w http.ResponseWriter, r *http.Request) {
 			Site: site, Project: project, IsProjectMain: isMain, Repo: repo, Subs: subs,
 			OwnerName: ownerName, PHPVersions: s.php.DetectVersions(), Modes: serveModes(),
 			Host: r.Host, IsAdmin: viewer.Role == store.RoleAdmin, ActiveTab: tab,
-			Detail:   "/domains/" + strconv.FormatInt(site.ID, 10),
+			AIAssistant: aiAssistant,
+			Detail:      "/domains/" + strconv.FormatInt(site.ID, 10),
 			App:      app, AppActive: appActive, AppEnabled: appEnabled, Runtimes: appRuntimes(),
 			SystemUser: systemUser, Head: head,
 		},
