@@ -76,6 +76,16 @@ type Config struct {
 	// SessionKey signs session cookies. Generated on first run if empty.
 	SessionKey string `json:"session_key"`
 
+	// AIProvider / AIModel / AIAPIKey configure the optional AI deployment
+	// assistant (Settings → AI Assistant). AIAPIKey is a SECRET — it lives in
+	// config.json alongside SessionKey (root-owned, 0600) and is NEVER rendered
+	// back to any HTML page; the UI only ever learns whether a key is set. All
+	// three are mutated at runtime from the settings form, so they are guarded by
+	// mu and accessed only through the accessor methods below.
+	AIProvider string `json:"ai_provider,omitempty"`
+	AIModel    string `json:"ai_model,omitempty"`
+	AIAPIKey   string `json:"ai_api_key,omitempty"`
+
 	// SetupPending is true from first run (the initial admin is created with a
 	// random bootstrap password) until the operator completes the first-login
 	// setup wizard, where they choose their own username + password. Guarded by mu.
@@ -86,8 +96,9 @@ type Config struct {
 	Dev bool `json:"-"`
 
 	// mu guards the fields mutated at runtime (WebServer, TLSCert, TLSKey,
-	// PanelHostname, SetupPending) against concurrent request-path readers.
-	// Access those fields only through the accessor methods below.
+	// PanelHostname, SetupPending, AIProvider, AIModel, AIAPIKey) against
+	// concurrent request-path readers. Access those fields only through the
+	// accessor methods below.
 	mu sync.RWMutex
 }
 
@@ -253,6 +264,39 @@ func (c *Config) TLSOverride() (cert, key string) {
 func (c *Config) SetTLSOverride(cert, key, host string) {
 	c.mu.Lock()
 	c.TLSCert, c.TLSKey, c.PanelHostname = cert, key, host
+	c.mu.Unlock()
+}
+
+// AISettings returns the AI assistant's display configuration: the provider,
+// the model, and whether an API key is on file — but NEVER the key itself, so
+// callers can safely render it. Locked.
+func (c *Config) AISettings() (provider, model string, keySet bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.AIProvider, c.AIModel, c.AIAPIKey != ""
+}
+
+// AICredentials returns the provider, model and the SECRET API key for making a
+// request. Reserved for the request path (the AI agent) — never pass its result
+// to a template. Locked.
+func (c *Config) AICredentials() (provider, model, key string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.AIProvider, c.AIModel, c.AIAPIKey
+}
+
+// SetAI atomically updates the AI assistant configuration. A blank key leaves
+// the stored key untouched (so the operator can change the model without
+// re-entering the secret); pass clearKey to remove it. Locked.
+func (c *Config) SetAI(provider, model, key string, clearKey bool) {
+	c.mu.Lock()
+	c.AIProvider, c.AIModel = provider, model
+	switch {
+	case clearKey:
+		c.AIAPIKey = ""
+	case key != "":
+		c.AIAPIKey = key
+	}
 	c.mu.Unlock()
 }
 

@@ -10,6 +10,8 @@ module.exports = {
     // The file explorer + domains picker build DOM (and class strings) in JS.
     "./internal/web/static/files.js",
     "./internal/web/static/domains.js",
+    // The AI assistant chat builds message bubbles (and class strings) in JS.
+    "./internal/web/static/assistant.js",
   ],
   theme: {
     extend: {

@@ -73,6 +73,10 @@ type settingsVM struct {
 	TLSEnabled    bool
 	PanelHostname string
 	CertKind      string // "self-signed" | "Let's Encrypt" | "custom"
+
+	AIProvider string
+	AIModel    string
+	AIKeySet   bool // whether an API key is on file (the key itself is never sent)
 }
 
 // ---------------------------------------------------------------------------
@@ -467,6 +471,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 			certKind = "custom"
 		}
 	}
+	aiProvider, aiModel, aiKeySet := s.cfg.AISettings()
 	s.render.page(w, http.StatusOK, "settings", pageData{
 		User: u, Active: "settings",
 		Flash: r.URL.Query().Get("msg"), Error: r.URL.Query().Get("err"),
@@ -474,6 +479,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 			ACMEEmail: s.cfg.ACMEEmail, ListenAddr: s.cfg.ListenAddr,
 			WebRoot: s.cfg.WebRoot, WebServer: s.cfg.WebServerName(), Dev: s.cfg.Dev,
 			TLSEnabled: s.cfg.TLSEnabled, PanelHostname: s.cfg.PanelHostname, CertKind: certKind,
+			AIProvider: aiProvider, AIModel: aiModel, AIKeySet: aiKeySet,
 		},
 	})
 }

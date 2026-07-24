@@ -44,6 +44,9 @@ func homeCategories(isAdmin bool) []homeCat {
 		}},
 	}
 	if isAdmin {
+		cats = append(cats, homeCat{Name: "Assistant", Tools: []homeTool{
+			{Name: "AI Assistant", Desc: "Deploy by chatting with AI", Href: "/assistant", Icon: "assistant"},
+		}})
 		cats = append(cats, homeCat{Name: "Preferences", Tools: []homeTool{
 			{Name: "Users", Desc: "Hosting accounts", Href: "/users", Icon: "users"},
 			{Name: "Settings", Desc: "Panel & server settings", Href: "/settings", Icon: "settings"},

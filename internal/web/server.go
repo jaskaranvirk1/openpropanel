@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/openpropanel/openpropanel/internal/ai"
 	"github.com/openpropanel/openpropanel/internal/auth"
 	"github.com/openpropanel/openpropanel/internal/config"
 	"github.com/openpropanel/openpropanel/internal/cron"
@@ -34,6 +35,7 @@ type Server struct {
 	mariadb *mariadb.Manager
 	pma     *phpmyadmin.Manager
 	cron    *cron.Manager
+	assistant *ai.Agent
 	render   *renderer
 	cfgPath  string
 	login    *loginLimiter
@@ -54,7 +56,8 @@ func New(cfg *config.Config, s *store.Store, a *auth.Manager, d *domains.Service
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, store: s, auth: a, domains: d, php: p, sysuser: su, mariadb: mdb, pma: pma, cron: cron.New(cfg), render: r, cfgPath: cfgPath,
+	return &Server{cfg: cfg, store: s, auth: a, domains: d, php: p, sysuser: su, mariadb: mdb, pma: pma, cron: cron.New(cfg),
+		assistant: ai.New(cfg, d, s), render: r, cfgPath: cfgPath,
 		login: newLoginLimiter(), pmaLogin: newLoginLimiter(), hookLimit: newLoginLimiter(), hookSeen: newDeliveryCache(512)}, nil
 }
 
@@ -83,6 +86,11 @@ func (s *Server) Handler() http.Handler {
 	app.HandleFunc("GET /dashboard", s.getDashboard)
 	app.HandleFunc("GET /dashboard/stats", s.getStats)
 	app.HandleFunc("POST /services/{unit}/{action}", s.postService)
+
+	// AI deployment assistant (admin-only: it holds the panel-wide API key and
+	// acts autonomously on any site).
+	app.Handle("GET /assistant", auth.RequireAdmin(http.HandlerFunc(s.getAssistant)))
+	app.Handle("POST /assistant/chat", auth.RequireAdmin(http.HandlerFunc(s.postAssistantChat)))
 
 	// Domains tool: a clean list page + a per-domain detail page.
 	app.HandleFunc("GET /domains", s.getDomains)
@@ -159,6 +167,7 @@ func (s *Server) Handler() http.Handler {
 	app.Handle("POST /users/{id}/delete", auth.RequireAdmin(http.HandlerFunc(s.postDeleteUser)))
 	app.Handle("GET /settings", auth.RequireAdmin(http.HandlerFunc(s.getSettings)))
 	app.Handle("POST /settings", auth.RequireAdmin(http.HandlerFunc(s.postSettings)))
+	app.Handle("POST /settings/ai", auth.RequireAdmin(http.HandlerFunc(s.postSettingsAI)))
 	app.Handle("POST /settings/panel-cert", auth.RequireAdmin(http.HandlerFunc(s.postPanelCert)))
 	app.Handle("POST /settings/webserver", auth.RequireAdmin(http.HandlerFunc(s.postWebServer)))
 	app.Handle("POST /settings/regenerate", auth.RequireAdmin(http.HandlerFunc(s.postRegenerate)))
